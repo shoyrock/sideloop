@@ -124,10 +124,10 @@ def main():
         for source in (ROOT / "sideloop").iterdir():
             if source.is_file():
                 expected = hashlib.sha256(source.read_bytes()).hexdigest()
-                check(file_hash(f"/opt/sideloop/{source.name}") == expected, f"application file {source.name} copied unchanged")
+                check(file_hash(f"/opt/sideloop/{source.name}") == expected, f"application file {source.name} matches checkout")
         for name in ("refresh.sh", "probe.sh"):
             expected = hashlib.sha256((ROOT / "scripts" / name).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
-            check(file_hash(f"/usr/local/bin/{name}") == expected, f"{name} behavior unchanged; Linux line endings")
+            check(file_hash(f"/usr/local/bin/{name}") == expected, f"{name} matches checkout; Linux line endings")
 
         auth_state, _ = request("/api/auth")
         check(not auth_state["has_password"], "fresh persistent volume starts with normal setup flow")
@@ -140,6 +140,26 @@ def main():
         state, _ = request("/api/state", cookie=cookie)
         check(state["services"]["anisette"] and state["services"]["muxer"], "authenticated UI reports both internal helpers available")
         request("/api/settings", {"auto_check": False}, cookie)
+        request("/api/appleid", {"apple_id": "first@example.test", "password": "smoke-first"}, cookie)
+        second, _ = request("/api/account/save", {"account": "new", "apple_id": "second@example.test",
+                                                   "password": "smoke-second"}, cookie)
+        second = second["account"]
+        device = "1234567890abcdef1234567890abcdef12345678"
+        fixture = "from sideloop import config,store; import json; " \
+                  f"store.add_device('{device}','Smoke iPhone'); " \
+                  "d=config.APPS/'smoke.app'; d.mkdir(parents=True); (d/'app.ipa').write_bytes(b'fixture'); " \
+                  f"config.write_env(d/'meta.env',{{'BUNDLE_ID':'smoke.app','APP_NAME':'Smoke App','DEVICES':'{device}','ADDED':'1'}}); " \
+                  "(d/'info.json').write_text(json.dumps({'bundle_id':'smoke.app','name':'Smoke App'}))"
+        inside("python3", "-c", fixture)
+        request("/api/account/assign", {"device": device, "account": second}, cookie)
+        state, _ = request("/api/state", cookie=cookie)
+        check(state["apps"][0]["targets"][0]["account"] == "default", "changing device default preserves existing app signer")
+        request("/api/account/assign", {"device": device, "app": "smoke.app", "account": second}, cookie)
+        state, _ = request("/api/state", cookie=cookie)
+        check(state["apps"][0]["targets"][0]["account"] == second, "API selects an account for an app/device target")
+        check("smoke-first" not in json.dumps(state) and "smoke-second" not in json.dumps(state), "account passwords are excluded from API state")
+        account_hash = file_hash(f"/data/accounts/{second}/credentials.env")
+        assignments_hash = file_hash("/data/signing-accounts.json")
         identity = file_hash("/data/anisette/device.json")
         ui_config = file_hash("/data/ui.json")
 
@@ -175,6 +195,10 @@ def main():
         check(file_hash("/data/ui.json") == ui_config, "UI credentials persist when container is recreated")
         state, _ = request("/api/state", cookie=cookie)
         check(not state["config"]["auto_check"], "application settings persist when container is recreated")
+        check(file_hash(f"/data/accounts/{second}/credentials.env") == account_hash and
+              file_hash("/data/signing-accounts.json") == assignments_hash and
+              state["apps"][0]["targets"][0]["account"] == second,
+              "multiple accounts and signing assignments persist when container is recreated")
         print("All container smoke checks passed. Physical-device signing was not tested.", flush=True)
     except Exception:
         if created:

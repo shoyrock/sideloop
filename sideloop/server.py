@@ -5,7 +5,7 @@ import time
 import urllib.parse
 from pathlib import Path
 
-from . import auth, config, ipa, pairing, store
+from . import accounts, auth, config, ipa, pairing, store
 from .config import LIFETIME_DAYS, MUX, PENDING_IPA, STATE
 from .jobs import redact, run_capture, run_pty
 from .watcher import configured
@@ -34,7 +34,9 @@ class App:
                        "renew_before_days": config.renew_before_days(cfg), "lifetime_days": LIFETIME_DAYS,
                        "auto_check": cfg["AUTO_CHECK"] == "1"},
             "apps": [store.app_view(a) for a in store.app_ids()],
-            "registered": [{"udid": u, "name": store.device_name(u), "live": live.get(u.lower())}
+            "accounts": accounts.views(),
+            "registered": [{"udid": u, "name": store.device_name(u), "live": live.get(u.lower()),
+                            "account": accounts.device_account(u)}
                            for u in store.device_ids()],
             "devices": h["devices"],
             "scanning": h["scanning"],
@@ -109,15 +111,27 @@ class App:
         store.remove_app(str(data["id"]))
 
     def apple_id(self, data):
-        apple_id = str(data.get("apple_id", "")).strip()
-        if "@" not in apple_id:
-            raise ValueError("enter the Apple ID's email address")
-        values = {"APPLE_ID": apple_id}
-        if data.get("password"):
-            values["APPLE_PASSWORD"] = str(data["password"])
-        elif not config.read()["APPLE_PASSWORD"]:
-            raise ValueError("enter the password")
-        config.update(values)
+        return self.save_account({**data, "account": "default"})
+
+    def save_account(self, data):
+        with self.jobs.lock:
+            self.idle()
+            return {"account": accounts.save(data.get("account", "new"), data.get("apple_id", ""),
+                                             data.get("password", ""))}
+
+    def assign_account(self, data):
+        with self.jobs.lock:
+            self.idle()
+            udid, app = self.device(data), self.app(data)
+            if not udid:
+                raise ValueError("which device?")
+            if app and not any(t["udid"] == udid for t in app["targets"]):
+                raise ValueError("that app isn't assigned to this device")
+            if not app:
+                for app_id in store.app_ids():
+                    if udid in store.app_devices(app_id):
+                        accounts.pin(app_id, udid)
+            accounts.assign(udid, str(data.get("account", "")), app["id"] if app else None)
 
     def settings(self, data):
         values = {}
@@ -176,6 +190,8 @@ class App:
             "/api/app/remove": self.remove_app,
             "/api/ipa/use": self.use_ipa,
             "/api/appleid": self.apple_id,
+            "/api/account/save": self.save_account,
+            "/api/account/assign": self.assign_account,
             "/api/settings": self.settings,
             "/api/refresh": self.refresh,
             "/api/recheck": self.recheck,

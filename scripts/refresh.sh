@@ -10,7 +10,6 @@ ALTSERVER_BIN="${ALTSERVER_BIN:-/usr/local/bin/AltServer}"
 
 [[ -r "$CONFIG" ]] || { echo "missing config: $CONFIG" >&2; exit 78; }
 set -a; . "$CONFIG"; set +a
-: "${APPLE_ID:?}" "${APPLE_PASSWORD:?}"
 : "${RENEW_BEFORE_DAYS:=2}"
 : "${ANISETTE_SERVER:=http://127.0.0.1:6969}"
 
@@ -53,6 +52,12 @@ DEVICE_NAME="$DEVICE"
 [[ -r "$DEVICES_DIR/$DEVICE.env" ]] && { set -a; . "$DEVICES_DIR/$DEVICE.env"; set +a; }
 IPA_PATH="$APP_DIR/app.ipa"
 APP_STATE="$APP_DIR/state/$DEVICE"
+# Resolve a target's account without changing upstream app/device metadata.
+account_context="$(python3 -m sideloop.accounts resolve "$APP" "$DEVICE")" || exit $?
+eval "$account_context"
+unset account_context
+: "${APPLE_ID:?}" "${APPLE_PASSWORD:?}"
+APP_STATE="$SIGNING_STATE"
 TAG="[${APP_NAME:-$APP} on $DEVICE_NAME] "
 EXPIRY="$APP_STATE/expiry"
 CERT="$APP_STATE/certificate"
@@ -66,11 +71,11 @@ export ALTSERVER_ANISETTE_SERVER="$ANISETTE_SERVER"
 # back "Untrusted Developer". The patched AltServer leaves them in place, and prune_profiles below
 # removes the outdated ones afterwards, never the newest.
 export ALTSERVER_KEEP_PROFILES=1
-export HOME="$DATA_DIR/.altserver"
+export HOME="$SIGNING_HOME"
 mkdir -p "$STATE_DIR" "$APP_STATE" "$HOME"
 # AltServer caches its signing certificate in ./AltServerData. Without that cache it revokes the
 # certificate and makes a new one, and iOS then asks to trust the developer again.
-cd "$DATA_DIR"
+cd "$SIGNING_WORKDIR"
 
 now() { date +%s; }
 fmt_epoch() { date -d "@$1" '+%a %d %b %H:%M'; }
@@ -145,9 +150,14 @@ PY
 }
 
 probe_expiry() {
-  local tmp rc=0
+  local tmp rc=0 cert=""
+  if [[ "${1:-0}" == 0 ]]; then
+    [[ -r "$CERT" ]] && cert="$(cat "$CERT")"
+    # A different account's profile is not evidence that this signer installed the app.
+    [[ "$SIGNING_ISOLATED" == 1 && -z "$cert" ]] && return 1
+  fi
   tmp="$(copy_profiles)" || return 1
-  read_profile "$tmp" "$BUNDLE_ID" "${1:-0}" || rc=$?
+  read_profile "$tmp" "$BUNDLE_ID" "${1:-0}" "$cert" || rc=$?
   rm -rf "$tmp"
   return $rc
 }
@@ -161,7 +171,7 @@ heal_siblings() {
   local tmp d s p name bundle cert
   tmp="$(copy_profiles)" || return 0
   for d in "$APPS_DIR"/*/; do
-    s="$d/state/$DEVICE"
+    s="$(python3 -m sideloop.accounts state "$(basename "$d")" "$DEVICE")" || continue
     [[ "$(basename "$d")" != "$APP" && -r "$s/expiry" && -r "$d/meta.env" ]] || continue
     IFS=$'\t' read -r bundle name < <(set -a; . "$d/meta.env"; printf '%s\t%s\n' "${BUNDLE_ID:-}" "${APP_NAME:-}")
     [[ -n "$bundle" ]] || continue
@@ -183,9 +193,9 @@ prune_profiles() {
   local f tmp u
   f="$(conn_flag)" || return 0
   tmp="$(copy_profiles)" || return 0
-  python3 - "$tmp" "$BUNDLE_ID" <<'PY' | while read -r u; do
-import glob, plistlib, re, subprocess, sys
-folder, bundle = sys.argv[1], sys.argv[2]
+  python3 - "$tmp" "$BUNDLE_ID" "$(cat "$CERT")" <<'PY' | while read -r u; do
+import glob, hashlib, plistlib, re, subprocess, sys
+folder, bundle, certificate = sys.argv[1], sys.argv[2], sys.argv[3]
 profiles = []
 for p in glob.glob(folder + "/*.mobileprovision"):
     xml = subprocess.run(["openssl", "smime", "-verify", "-noverify", "-inform", "DER", "-in", p],
@@ -194,19 +204,20 @@ for p in glob.glob(folder + "/*.mobileprovision"):
         d = plistlib.loads(xml)
     except Exception:
         continue
-    profiles.append((d.get("Entitlements", {}).get("application-identifier", ""), d["CreationDate"], d["UUID"]))
+    certs = [hashlib.sha1(x).hexdigest() for x in d.get("DeveloperCertificates", [])]
+    profiles.append((d.get("Entitlements", {}).get("application-identifier", ""), d["CreationDate"], d["UUID"], certs))
 main = re.compile(r"^(\w+)\." + re.escape(bundle) + r"\.\1$")
 # The app was just installed, so its newest profile belongs to this Apple ID's team. Profiles of
 # other teams (SideStore, Xcode) are left alone.
-ours = max(((c, a) for a, c, _ in profiles if main.match(a)), default=None)
+ours = max(((c, a) for a, c, _, certs in profiles if main.match(a) and certificate in certs), default=None)
 if ours is None:
     sys.exit()
 team = ours[1].split(".", 1)[0]
 newest = {}
-for a, c, u in profiles:
+for a, c, u, _ in profiles:
     if a.split(".", 1)[0] == team and (a not in newest or c > newest[a][0]):
         newest[a] = (c, u)
-for a, c, u in profiles:
+for a, c, u, _ in profiles:
     if a in newest and newest[a][1] != u:
         print(u)
 PY

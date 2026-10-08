@@ -1,0 +1,5 @@
+# Reuse the tested signing binaries while validating application-only changes.
+FROM ghcr.io/shoyrock/sideloop@sha256:80e8d5e0d00492292e3950386971fdd171f2557d2bacab4474a28779dffd32be
+COPY sideloop/ /opt/sideloop/
+COPY scripts/refresh.sh /usr/local/bin/refresh.sh
+RUN sed -i 's/\r$//' /usr/local/bin/refresh.sh && chmod +x /usr/local/bin/refresh.sh

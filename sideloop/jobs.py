@@ -8,7 +8,7 @@ import subprocess
 import threading
 import time
 
-from . import config
+from . import accounts, config
 
 MASK = "••••••••"
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
@@ -27,8 +27,14 @@ def hidden(line):
 
 
 def redact(lines):
-    secret = config.read()["APPLE_PASSWORD"]
-    return [ln.replace(secret, MASK) if secret else ln for ln in lines if not hidden(ln)]
+    passwords = accounts.passwords()
+    return [mask(ln, passwords) for ln in lines if not hidden(ln)]
+
+
+def mask(text, passwords):
+    for secret in sorted(passwords, key=len, reverse=True):
+        text = text.replace(secret, MASK)
+    return text
 
 
 class Job:
@@ -39,7 +45,7 @@ class Job:
         self.stage, self.fraction, self.app = None, 0.0, None
         self.pid, self.fd, self.cancelled = None, None, False
         self.lock = threading.Lock()
-        self.secret = config.read()["APPLE_PASSWORD"]
+        self.secrets = accounts.passwords()
 
     @property
     def running(self):
@@ -47,12 +53,11 @@ class Job:
 
     def add(self, text):
         text = ANSI.sub("", text)
-        if self.secret:
-            text = text.replace(self.secret, MASK)
         with self.lock:
             buf = (self.partial + text).replace("\r\n", "\n").replace("\r", "\n")
             *done, self.partial = buf.split("\n")
             for line in done:
+                line = mask(line, self.secrets)
                 t = line.strip()
                 if not t:
                     continue
@@ -95,7 +100,7 @@ class Job:
             raise RuntimeError("this step doesn't take input")
         with self.lock:
             self.needs_input = False
-            self.lines.append((self.partial.strip() + " ••••••").strip())
+            self.lines.append((mask(self.partial.strip(), self.secrets) + " ••••••").strip())
             self.partial = ""
         os.write(self.fd, (text.strip() + "\n").encode())
 
@@ -113,7 +118,7 @@ class Job:
                  "ended": int(self.ended) if self.ended else None, "rc": self.rc, "running": self.running,
                  "needs_input": self.needs_input, "accepts_input": self.fd is not None,
                  "stage": self.stage, "fraction": round(self.fraction, 4), "app": self.app,
-                 "total": len(self.lines), "partial": self.partial.strip(),
+                 "total": len(self.lines), "partial": mask(self.partial.strip(), self.secrets),
                  "last": self.lines[-1] if self.lines else ""}
             if since is not None:
                 v["lines"] = self.lines[since:]

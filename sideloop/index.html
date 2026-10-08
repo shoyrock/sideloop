@@ -11,6 +11,7 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Cdefs%3E%3ClinearGradient id='bg' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%235ac8fa'/%3E%3Cstop offset='.55' stop-color='%23007aff'/%3E%3Cstop offset='1' stop-color='%235856d6'/%3E%3C/linearGradient%3E%3ClinearGradient id='gloss' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop offset='0' stop-color='%23fff' stop-opacity='.22'/%3E%3Cstop offset='.5' stop-color='%23fff' stop-opacity='0'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='512' height='512' rx='115' fill='url%28%23bg%29'/%3E%3Crect width='512' height='512' rx='115' fill='url%28%23gloss%29'/%3E%3Cg fill='none' stroke='%23fff' stroke-width='30' stroke-linecap='round'%3E%3Cpath d='M370.3 190A132 132 0 0 0 128 225'/%3E%3Cpath d='M141.7 322A132 132 0 0 0 384 287'/%3E%3C/g%3E%3Cg fill='%23fff' stroke='%23fff' stroke-width='10' stroke-linejoin='round'%3E%3Cpath d='M121 266L99 216L156 226Z'/%3E%3Cpath d='M391 246L413 296L356 286Z'/%3E%3C/g%3E%3Crect x='211' y='176' width='90' height='160' rx='22' fill='%23fff'/%3E%3Crect x='238' y='190' width='36' height='8' rx='4' fill='%23007aff' opacity='.55'/%3E%3Cpath d='M232 262l17 17 32-36' fill='none' stroke='%23007aff' stroke-width='16' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <style>
 :root{
+  color-scheme:light;
   --bg:#f2f2f7; --cell:#ffffff; --elev:#ffffff;
   --label:#000000; --label-2:rgba(60,60,67,.6); --label-3:rgba(60,60,67,.3);
   --sep:rgba(60,60,67,.29); --fill:rgba(120,120,128,.2); --fill-3:rgba(118,118,128,.12);
@@ -19,6 +20,7 @@
   --mono:ui-monospace,"SF Mono",Menlo,monospace;
 }
 @media (prefers-color-scheme:dark){:root{
+  color-scheme:dark;
   --bg:#000000; --cell:#1c1c1e; --elev:#2c2c2e;
   --label:#ffffff; --label-2:rgba(235,235,245,.6); --label-3:rgba(235,235,245,.3);
   --sep:rgba(84,84,88,.6); --fill:rgba(120,120,128,.36); --fill-3:rgba(118,118,128,.24);
@@ -100,6 +102,10 @@ button.cell:active:not(:disabled){background:var(--fill-3)}
 .cell input.fi:focus{color:var(--label)}
 .cell input.fi::placeholder{color:var(--label-3)}
 .cell select.fi{appearance:none;-webkit-appearance:none;cursor:pointer;text-align-last:right}
+.cell select.fi{color:var(--label)}
+.cell select.fi option{background:var(--cell);color:var(--label)}
+.cell select.fi:focus-visible,.cell input.fi:focus-visible{outline:2px solid var(--blue);outline-offset:3px}
+.accountrow{flex-wrap:wrap}.accountrow label{flex:1;min-width:120px}
 .cell label{flex:none}
 
 .drop{position:relative;display:flex;align-items:center;gap:12px;padding:10px 16px;min-height:44px;cursor:pointer;color:var(--blue)}
@@ -192,6 +198,7 @@ let S = null, view = VIEWS.includes(location.hash.slice(1)) ? location.hash.slic
 let lastPage = "", pending = null, confirmRemove = null, jobSince = 0, jobLines = [], jobId = null, pollT = null, pollGen = 0, showLog = false;
 const watched = new Set();
 let dismissedJob = null;
+let editingAccount = "default";
 try { dismissedJob = localStorage.getItem("dismissedJob"); } catch {}
 function dismiss(id) { dismissedJob = id; try { localStorage.setItem("dismissedJob", id); } catch {} }
 const sheetJob = () => { const j = S && S.job; return j && j.id !== dismissedJob && (j.running || watched.has(j.id)) ? j : null; };
@@ -450,19 +457,25 @@ sheetHost.addEventListener("submit", e => {
   act(() => api("/api/job/input", {json:{text:v}}));
 });
 
+const accountName = id => { const a = (S.accounts || []).find(a => a.id === id); return a && a.email ? a.email : "Default account"; };
+const accountOptions = current => (S.accounts || []).map(a =>
+  `<option value="${esc(a.id)}" ${a.id === current ? "selected" : ""} ${!a.email || !a.has_password ? "disabled" : ""}>${esc(accountName(a.id))}${!a.email || !a.has_password ? " (not configured)" : ""}</option>`).join("");
+
 function settingsView() {
   const c = S.config, apps = S.apps || [], canPair = S.mode === "builtin", devs = S.registered || [];
   const known = new Set(devs.map(d => d.udid.toLowerCase()));
   const visible = (S.devices || []).filter(d => !known.has(d.udid.toLowerCase()));
   const replacing = pending && apps.find(a => a.bundle_id === pending.info.bundle_id);
-  const appIds = apps.reduce((n, a) => n + 1 + (+(a.info && a.info.extension_count) || 0), 0);
+  const busy = !!((S.job && S.job.running) || S.watcher.running);
+  const editing = (S.accounts || []).find(a => a.id === editingAccount);
   const trash = (kind, id, label) => `<button class="iconbtn ${confirmRemove === kind + id ? "armed" : ""}" data-remove="${esc(kind + id)}" aria-label="Remove ${esc(label)}">${confirmRemove === kind + id ? "Remove" : ic("trash-outline", 20)}</button>`;
   return `
   <div class="sect">
     <div class="shead"><h3>Devices</h3></div>
     <div class="list">
       ${devs.map(d => { const [cls, label] = devState(d);
-        return `<div class="cell ind">${tile(d.live ? "var(--blue)" : "var(--gray)", devIcon(d))}<span class="k">${esc(d.name)}<span class="sub">${label}</span></span>${trash("dev:", d.udid, d.name)}</div>`; }).join("")}
+        return `<div class="cell ind">${tile(d.live ? "var(--blue)" : "var(--gray)", devIcon(d))}<span class="k">${esc(d.name)}<span class="sub">${label}</span></span>${trash("dev:", d.udid, d.name)}</div>
+          <div class="cell accountrow"><label for="da-${esc(d.udid)}">Account for new apps</label><select class="fi" id="da-${esc(d.udid)}" data-account-device="${esc(d.udid)}" aria-label="Account for new apps on ${esc(d.name)}" ${busy ? "disabled" : ""}>${accountOptions(d.account)}</select></div>`; }).join("")}
       ${visible.map(d => `<div class="cell ind">${tile("var(--gray)", devIcon({live:d, name:d.name}))}<span class="k">${esc(d.name)}<span class="sub">${d.reachable ? "Paired, not added" : "Locked"}</span></span>
         <button class="cap solid" data-add="${esc(d.udid)}">Add</button></div>`).join("")}
       ${!devs.length && !visible.length ? `<div class="cell"><span class="k" style="color:var(--label-2)">${S.scanning ? "Looking for devices…" : "No device found"}</span></div>` : ""}
@@ -478,7 +491,10 @@ function settingsView() {
       ${apps.map(a => { const on = new Set(a.targets.map(t => t.udid));
         return `<div class="cell ind appcell">${appIcon(a, "xs")}<span class="k">${esc(a.name)}<span class="sub">${esc(a.version)}</span>
           ${devs.length > 1 ? `<span class="chips">${devs.map(d => `<button class="chip ${on.has(d.udid) ? "on" : ""}" data-toggle="${esc(a.id)}" data-dev="${esc(d.udid)}">${on.has(d.udid) ? ic("checkmark", 12) : ""}${esc(d.name)}</button>`).join("")}</span>` : ""}</span>
-          ${trash("app:", a.id, a.name)}</div>`; }).join("")}
+          ${trash("app:", a.id, a.name)}</div>
+          ${a.targets.map(t => `<div class="cell accountrow"><label for="aa-${esc(a.id)}-${esc(t.udid)}">${esc(t.name)}</label>
+            <select class="fi" id="aa-${esc(a.id)}-${esc(t.udid)}" data-account-app="${esc(a.id)}" data-account-device="${esc(t.udid)}" aria-label="Signing account for ${esc(a.name)} on ${esc(t.name)}" ${busy ? "disabled" : ""}>
+              <option value="" ${!t.account_override ? "selected" : ""}>Device default (${esc(accountName((devs.find(d => d.udid === t.udid) || {}).account || "default"))})</option>${accountOptions(t.account_override)}</select></div>`).join("")}`; }).join("")}
       ${pending ? `<div class="cell ind">${appIcon(pending.info, "xs")}<span class="k">${esc(pending.info.name)}<span class="sub">${esc(pending.info.version)} · ${esc(pending.filename)}</span></span></div>
         ${ipaWarnings(pending.info)}
         <button class="cell action" id="useipa" style="font-weight:600">${replacing ? `Replace ${esc(replacing.name)}` : devs.length > 1 ? "Add to All Devices" : "Add App"}</button>
@@ -487,17 +503,18 @@ function settingsView() {
          <div class="progress hidden" id="prog"><i></i></div>
          <input type="file" id="file" accept=".ipa" class="hidden">`}
     </div>
-    <div class="foot">A free Apple ID allows 3 apps per device and 10 App IDs a week${apps.length ? ` (these use ${appIds}; the same app on more devices costs nothing extra)` : ""}.</div>
+    <div class="foot">Free signing allows 3 installed apps per device, even with multiple accounts. Each account allows 10 App IDs a week; extensions use App IDs too. Choose the signing account for each app above.</div>
   </div>
 
   <div class="sect">
-    <div class="shead"><h3>Apple ID</h3></div>
+    <div class="shead"><h3>Apple Accounts</h3></div>
     <form id="aidf" autocomplete="off"><div class="list">
-      <div class="cell"><label for="aid">Email</label><input class="fi" id="aid" type="email" value="${esc(c.apple_id)}" placeholder="name@example.com" required></div>
-      <div class="cell"><label for="apw">Password</label><input class="fi" id="apw" type="password" placeholder="${c.has_password ? "Saved" : "Required"}" autocomplete="new-password"></div>
-      <button class="cell action">Save</button>
+      <div class="cell"><label for="accountedit">Account</label><select class="fi" id="accountedit" ${busy ? "disabled" : ""}>${(S.accounts || []).map(a => `<option value="${esc(a.id)}" ${editingAccount === a.id ? "selected" : ""}>${esc(accountName(a.id))}${a.id === "default" ? " (default)" : ""}</option>`).join("")}<option value="new" ${editingAccount === "new" ? "selected" : ""}>Add another account…</option></select></div>
+      <div class="cell"><label for="aid">Email</label><input class="fi" id="aid" type="email" value="${esc(editing ? editing.email : "")}" placeholder="name@example.com" required ${busy ? "disabled" : ""}></div>
+      <div class="cell"><label for="apw">Password</label><input class="fi" id="apw" type="password" placeholder="${editing && editing.has_password ? "Saved" : "Required"}" autocomplete="new-password" ${busy ? "disabled" : ""}></div>
+      <button class="cell action" ${busy ? "disabled" : ""}>Save Account</button>
     </div></form>
-    <div class="foot">Use the regular password, not an app-specific one.</div>
+    <div class="foot">Use the regular password, not an app-specific one. Changing the account for new apps keeps existing apps with their current signer. Selecting a different signer for an existing app may install a separate copy; this selector does not migrate existing app data.</div>
   </div>
 
   <div class="sect">
@@ -559,7 +576,18 @@ function wire() {
     const [kind, key] = [id.slice(0, 4), id.slice(4)];
     act(() => kind === "dev:" ? api("/api/device/remove", {json:{device:key}}) : api("/api/app/remove", {json:{id:key}}), "Removed");
   });
-  on("aidf", "onsubmit", e => { e.preventDefault(); act(async () => { await api("/api/appleid", {json:{apple_id:$("#aid").value, password:$("#apw").value}}); $("#apw").value = ""; }, "Saved"); });
+  on("accountedit", "onchange", e => {
+    editingAccount = e.target.value;
+    const a = (S.accounts || []).find(a => a.id === editingAccount);
+    $("#aid").value = a ? a.email : ""; $("#apw").value = "";
+    render();
+  });
+  on("aidf", "onsubmit", e => { e.preventDefault(); act(async () => {
+    const r = await api("/api/account/save", {json:{account:editingAccount, apple_id:$("#aid").value, password:$("#apw").value}});
+    editingAccount = r.account; $("#apw").value = "";
+  }, "Account saved"); });
+  root.querySelectorAll("[data-account-device]").forEach(el => el.onchange = () => act(() =>
+    api("/api/account/assign", {json:{device:el.dataset.accountDevice, app:el.dataset.accountApp || null, account:el.value}}), "Signing account saved"));
   on("useipa", "onclick", () => act(async () => { await api("/api/ipa/use", {json:{filename:pending.filename}}); pending = null; }, "App added"));
   on("dropipa", "onclick", () => { pending = null; render(); });
   const drop = $("#drop"), file = $("#file");

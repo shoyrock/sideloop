@@ -3,7 +3,7 @@ import re
 import shutil
 import time
 
-from . import ipa
+from . import accounts, ipa
 from .config import APPS, DEVICES, read_env, write_env
 
 APP_KEYS = ["BUNDLE_ID", "APP_NAME", "APP_VERSION", "IPA_SOURCE", "ADDED", "DEVICES"]
@@ -54,6 +54,7 @@ def remove_device(udid):
     for app_id in app_ids():
         set_app_devices(app_id, [u for u in app_meta(app_id)["DEVICES"].split() if u.lower() != udid.lower()])
         shutil.rmtree(APPS / app_id / "state" / udid, ignore_errors=True)
+    accounts.forget(udid=udid)
 
 
 def app_ids():
@@ -75,6 +76,8 @@ def set_app_devices(app_id, udids):
     meta = app_meta(app_id)
     meta["DEVICES"] = " ".join(udids)
     write_env(APPS / app_id / "meta.env", meta)
+    for udid in udids:
+        accounts.pin(app_id, udid)
 
 
 def app_view(app_id):
@@ -85,7 +88,9 @@ def app_view(app_id):
         "name": meta["APP_NAME"] or app_id,
         "version": meta["APP_VERSION"],
         "info": ipa.cached(d),
-        "targets": [{"udid": u, "name": device_name(u), "signature": read_state(d / "state" / u)}
+        "targets": [{"udid": u, "name": device_name(u), "account": accounts.resolve(app_id, u),
+                     "account_override": accounts.app_override(app_id, u),
+                     "signature": read_state(accounts.state_folder(app_id, u))}
                     for u in app_devices(app_id, meta)],
     }
 
@@ -105,8 +110,11 @@ def add_app(src, info, filename):
         "DEVICES": old["DEVICES"] if old["ADDED"] else " ".join(device_ids()),
     })
     (d / "info.json").unlink(missing_ok=True)
+    for udid in app_devices(app_id):
+        accounts.pin(app_id, udid)
     return app_id
 
 
 def remove_app(app_id):
     shutil.rmtree(APPS / app_id)
+    accounts.forget(app_id=app_id)

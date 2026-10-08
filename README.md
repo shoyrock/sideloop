@@ -12,16 +12,22 @@ A small self-hosted service with a web UI for any Linux machine (amd64 or arm64)
 ## Features
 
 - [x] Multiple apps on multiple iPhones and iPads
+- [x] Multiple saved Apple accounts, with a signer selected per app/device (fork feature)
 - [x] Automatic re-signing when a device comes online, before the signature expires
 - [x] Web UI for pairing, uploading IPAs, 2FA codes and live progress
 - [x] Checks each IPA for FairPlay encryption, tweaks and app extensions
 - [x] Self-hosted Apple sign-in via [anisette-v3-server](https://github.com/Dadoum/anisette-v3-server)
 - [x] Python standard library only, one Docker image for amd64 and arm64
 
-This checkout packages Sideloop and Anisette in **one container**. The signing
-code, authentication, UI, and Linux USB/network permissions are unchanged.
+This checkout packages Sideloop and Anisette in **one container**. It adds
+account selection and fixes dropdown readability in dark mode. The AltServer
+signing binary, UI authentication, and Linux USB/network permissions are unchanged.
 Supervisor manages both services, and Anisette keeps its original service
 account. All persistent data, including Anisette, lives under `./data`.
+
+See [multiple accounts and upstream updates](docs/multiple-accounts.md) for
+usage, storage compatibility, local testing, and the candidate image. The
+published `all-in-one-amd64` release described below predates this feature.
 
 ## Demo
 

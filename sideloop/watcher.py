@@ -1,7 +1,7 @@
 import threading
 import time
 
-from . import config, store
+from . import accounts, config, store
 from .config import APPS
 from .jobs import run_capture
 from .log import log
@@ -14,7 +14,8 @@ RUN_TIMEOUT = 6 * 60 * 60
 
 def configured(cfg=None):
     cfg = cfg or config.read()
-    return bool(cfg["APPLE_ID"] and cfg["APPLE_PASSWORD"] and store.device_ids() and store.app_ids())
+    return bool(cfg["APPLE_ID"] and cfg["APPLE_PASSWORD"] and store.device_ids() and store.app_ids()) or any(
+        accounts.ready(accounts.resolve(a, u)) for a in store.app_ids() for u in store.app_devices(a))
 
 
 class Watcher:
@@ -29,7 +30,7 @@ class Watcher:
         window = config.renew_before_days() * 86400
         for app_id in store.app_ids():
             for udid in store.app_devices(app_id):
-                expiry = store.read_state(APPS / app_id / "state" / udid)["expiry"]
+                expiry = store.read_state(accounts.state_folder(app_id, udid))["expiry"]
                 if not expiry or expiry - time.time() <= window:
                     return True
         return False
