@@ -12,6 +12,7 @@ import secrets
 import shlex
 import sys
 import threading
+import time
 from pathlib import Path
 
 from . import config
@@ -45,7 +46,8 @@ def ids():
 
 
 def views():
-    return [{"id": i, "email": c["APPLE_ID"], "has_password": bool(c["APPLE_PASSWORD"])}
+    return [{"id": i, "email": c["APPLE_ID"], "has_password": bool(c["APPLE_PASSWORD"]),
+             "verification": verification(i)}
             for i in ids() for c in [credentials(i)]]
 
 
@@ -87,7 +89,38 @@ def save(account_id, email, password=""):
             config.write_env(folder / "credentials.env", values)
             if not config.CONFIG.exists():
                 config.update({})
+        if new or values != old:
+            set_verification(account_id, "unverified")
         return account_id
+
+
+def verification(account_id):
+    path = config.DATA / 'account-verification.json'
+    try:
+        return json.loads(path.read_text()).get(account_id, {"status": "unverified"})
+    except FileNotFoundError:
+        return {"status": "unverified"}
+
+
+def set_verification(account_id, status):
+    # Only status and time are persisted; codes and Apple session tokens aren't.
+    with _lock:
+        credentials(account_id)
+        path = config.DATA / 'account-verification.json'
+        data = json.loads(path.read_text()) if path.exists() else {}
+        data[account_id] = {"status": status, "checked_at": int(time.time())}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix('.tmp')
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            json.dump(data, f)
+        os.replace(tmp, path)
+
+
+def clear_interrupted_verifications():
+    for account_id in ids():
+        if verification(account_id)['status'] == 'checking':
+            set_verification(account_id, 'unverified')
 
 
 def _assignments():

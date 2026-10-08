@@ -1,5 +1,15 @@
-# Reuse the tested signing binaries while validating application-only changes.
+# Extend the pinned signing engine with an authentication-only entrypoint.
+FROM ghcr.io/nyamisty/altserver_builder_alpine_amd64 AS signer
+COPY altserver/*.patch /tmp/patches/
+RUN git clone -q --recursive --depth 1 --shallow-submodules -b ng-2026-09-13 \
+      https://github.com/jaakkopalvaila/AltServer-Linux /src \
+ && cd /src && git apply /tmp/patches/*.patch \
+ && mkdir build && cd build && make -f ../Makefile -j4 \
+ && cp AltServer-* /AltServer
+
 FROM ghcr.io/shoyrock/sideloop@sha256:80e8d5e0d00492292e3950386971fdd171f2557d2bacab4474a28779dffd32be
+COPY --from=signer /AltServer /usr/local/bin/AltServer
 COPY sideloop/ /opt/sideloop/
 COPY scripts/refresh.sh /usr/local/bin/refresh.sh
+COPY container/supervisord.conf /etc/sideloop/supervisord.conf
 RUN sed -i 's/\r$//' /usr/local/bin/refresh.sh && chmod +x /usr/local/bin/refresh.sh
