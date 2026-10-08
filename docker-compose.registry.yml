@@ -2,7 +2,7 @@ name: sideloop
 
 services:
   app:
-    image: ghcr.io/shoyrock/sideloop:all-in-one-amd64
+    image: ghcr.io/shoyrock/sideloop:latest
     container_name: sideloop
     restart: unless-stopped
     stop_grace_period: 45s

@@ -54,10 +54,10 @@ not understand multiple-account assignments and would use its default account
 for all apps. Restore the pre-update backup when rolling back; retained legacy
 paths alone do not make that rollback safe for apps signed with other accounts.
 
-## Local candidate image
+## Published image and local builds
 
-The published `ghcr.io/shoyrock/sideloop:all-in-one-amd64` release predates this
-feature. Build the candidate locally on the feature branch:
+Use `ghcr.io/shoyrock/sideloop:latest` for the current published image. The older
+`all-in-one-amd64` release predates this feature. Build locally from this checkout:
 
 ```bash
 docker build --platform linux/amd64 -f tools/Dockerfile.candidate \
@@ -65,9 +65,9 @@ docker build --platform linux/amd64 -f tools/Dockerfile.candidate \
 ```
 
 This layers the application changes onto the pinned, previously tested combined
-image. AltServer, Anisette, dependencies, and device helper binaries remain the
-same. The root Dockerfile also incorporates the changes in a complete source
-build. No GitHub runner is used.
+image and rebuilds AltServer with the small authentication-only patch described
+in [account verification](account-verification.md). The root Dockerfile also
+incorporates the changes in a complete source build. No GitHub runner is used.
 
 The exported `artifacts/sideloop-multi-account-candidate-amd64.tar.gz` can be copied
 to Unraid and loaded there:

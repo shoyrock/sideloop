@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>Sideloop</Name>
-  <Repository>ghcr.io/shoyrock/sideloop:all-in-one-amd64</Repository>
+  <Repository>ghcr.io/shoyrock/sideloop:latest</Repository>
   <Registry>https://github.com/shoyrock/sideloop/pkgs/container/sideloop</Registry>
   <Network>host</Network>
   <Shell>bash</Shell>

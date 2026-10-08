@@ -13,6 +13,7 @@ A small self-hosted service with a web UI for any Linux machine (amd64 or arm64)
 
 - [x] Multiple apps on multiple iPhones and iPads
 - [x] Multiple saved Apple accounts, with a signer selected per app/device (fork feature)
+- [x] Verify saved Apple credentials, with a code prompt only when Apple requests MFA
 - [x] Automatic re-signing when a device comes online, before the signature expires
 - [x] Web UI for pairing, uploading IPAs, 2FA codes and live progress
 - [x] Checks each IPA for FairPlay encryption, tweaks and app extensions
@@ -20,14 +21,17 @@ A small self-hosted service with a web UI for any Linux machine (amd64 or arm64)
 - [x] Python standard library only, one Docker image for amd64 and arm64
 
 This checkout packages Sideloop and Anisette in **one container**. It adds
-account selection and fixes dropdown readability in dark mode. The AltServer
-signing binary, UI authentication, and Linux USB/network permissions are unchanged.
+account selection, account verification and readable dropdowns in dark mode.
+A small AltServer patch adds authentication-only verification using the existing
+Apple sign-in implementation. Signing and Anisette run in UTC, and failed jobs
+report authentication errors without waiting at AltServer's error pause.
 Supervisor manages both services, and Anisette keeps its original service
 account. All persistent data, including Anisette, lives under `./data`.
 
 See [multiple accounts and upstream updates](docs/multiple-accounts.md) for
-usage, storage compatibility, local testing, and the candidate image. The
-published `all-in-one-amd64` release described below predates this feature.
+usage, storage compatibility and local testing. See [account verification](docs/account-verification.md)
+for the conditional MFA flow and its testing limits. These features are included
+in the published `latest` image.
 
 ## Demo
 
@@ -46,7 +50,7 @@ A two-minute narrated walkthrough: setup, adding devices and apps, the first ins
 ### Pull the published amd64 image
 
 For an Intel/AMD 64-bit Linux server, use
-`ghcr.io/shoyrock/sideloop:all-in-one-amd64`. This includes the Anisette helper
+`ghcr.io/shoyrock/sideloop:latest`. This includes the Anisette helper
 in the same container. See [the Unraid template and installation instructions](templates/README.md)
 for Unraid, or clone this fork and run:
 
@@ -61,8 +65,19 @@ set `UI_PORT=8743` to avoid the commonly used 8080 port. Keep host networking
 for device discovery. You can choose another available port with `UI_PORT`;
 on Unraid, update the advanced WebUI URL to match it.
 
-The published image is the tested release archive,
-verified by SHA-256 before publication. Only **linux/amd64** is published here.
+The published image is built and tested locally. `latest` moves when a new image
+is published; existing containers must pull the update and be recreated. On
+Unraid, use **Check for Updates** and update Sideloop. With Compose, run:
+
+```bash
+docker compose -f docker-compose.registry.yml pull
+docker compose -f docker-compose.registry.yml up -d
+```
+
+Only **linux/amd64** is published here. The `account-verification-amd64` tag retains
+the current verification build for testing. Live Apple sign-in and installation
+still require testing; adding the verification flow is not proof that Apple's
+existing `-22411` rejection is resolved.
 Source builds for other architectures are described below.
 
 Prerequisites
@@ -161,7 +176,7 @@ Pair the device in Finder and enable **Show this iPhone when on Wi-Fi**.
 ## Notes
 
 - Use the Apple ID's **regular password**. App-specific passwords don't work.
-- Apple asks for a **2FA code** on the first sign-in. After that, sign-ins are silent.
+- A **2FA code** is requested only when Apple requires verification. Saving credentials alone does not verify sign-in; use **Save and Verify Account**. The existing trusted-device code flow is supported; SMS delivery/fallback is not added.
 - The device must be **unlocked and on the same Wi-Fi** while a re-sign runs.
 - A free account allows 3 apps per device and 10 App IDs per week. Each app extension needs its own App ID.
 - Trust the developer once in **Settings > General > VPN & Device Management**. Refreshes keep it trusted.

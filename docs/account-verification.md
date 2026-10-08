@@ -54,6 +54,15 @@ fake Apple endpoint, returns nonzero on rejection, and creates no signing data.
 Browser tests use only synthetic accounts with `tests/fake_auth_preview.py`.
 These checks validate the implementation; they don't claim live Apple sign-in.
 
+## Pull the published image on Unraid
+
+Set the existing container's Repository to `ghcr.io/shoyrock/sideloop:latest`
+and click Apply. Keep the existing appdata, pairing and USB mounts, host network,
+Anisette URL and `UI_PORT=8743`. Future published images can be installed through
+Unraid's Check for Updates and container update action. No registry login is
+needed to pull this public image. The `account-verification-amd64` tag also
+identifies the initial verification build.
+
 ## Test the exported image on Unraid
 
 Copy `sideloop-account-verification-amd64.tar.gz` to the server, then load it:
