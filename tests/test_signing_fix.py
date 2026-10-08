@@ -4,11 +4,17 @@ import datetime
 import pty
 import select
 import subprocess
+import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+sys.path.insert(0, "/opt")
+from sideloop import config
+from sideloop.jobs import Job, run_pty
 
 DEVICE = "1234567890abcdef1234567890abcdef12345678"
 
@@ -34,6 +40,15 @@ root=Path(os.environ['DATA_DIR'])
 if os.environ.get('TEST_2FA'):
     print('Enter verification code:',flush=True)
     (root/'input-received').write_text(input())
+if os.environ.get('TEST_ERROR_PAUSE'):
+    print('Alert: Could not install app.ipa to unknown.',flush=True)
+    print('    This action cannot be completed at this time (-22411)',flush=True)
+    # A prompt split across reads must still be acknowledged exactly once.
+    print('Press any key to cont',end='',flush=True)
+    import time
+    time.sleep(0.1)
+    print('inue...',end='',flush=True)
+    (root/'error-ack').write_text(input())
 print('This action cannot be completed at this time (-22411)')
 print('Error: com.rileytestut.AltServer.Localized (-22411).')
 print('Finished!')
@@ -92,6 +107,42 @@ print('Finished!')
         self.assertTrue(sent)
         self.assertEqual((self.root / "input-received").read_text(), "123456")
         self.check_result(os.waitstatus_to_exitcode(status), output)
+
+    def test_web_job_waits_for_2fa_then_acknowledges_only_error_pause(self):
+        original_config = config.CONFIG
+        config.CONFIG = self.root / 'config.env'
+        job = Job('refresh', 'Synthetic signing')
+        config.CONFIG = original_config
+        worker = threading.Thread(target=run_pty, args=(job, [
+            'env', *[f'{key}={self.env[key]}' for key in ('DATA_DIR', 'TZ', 'PATH', 'ALTSERVER_BIN')],
+            'TEST_2FA=1', 'TEST_ERROR_PAUSE=1', *self.argv,
+        ]), daemon=True)
+        worker.start()
+        try:
+            deadline = time.monotonic() + 10
+            while worker.is_alive() and not job.view()['needs_input']:
+                self.assertLess(time.monotonic(), deadline, job.view())
+                time.sleep(0.02)
+            self.assertTrue(job.view()['needs_input'], job.view())
+            self.assertFalse((self.root / 'input-received').exists())
+            job.send('123456')
+            worker.join(10)
+            self.assertFalse(worker.is_alive(), job.view())
+            self.assertEqual((self.root / 'input-received').read_text(), '123456')
+            self.assertEqual((self.root / 'error-ack').read_text(), '')
+            self.check_result(job.rc, '\n'.join(job.view(0)['lines']))
+        finally:
+            if worker.is_alive():
+                job.cancel()
+                worker.join(5)
+
+    def test_unrelated_keypress_prompt_is_not_acknowledged(self):
+        job = Job('refresh', 'Synthetic signing')
+        job.add('Press any key to continue...\n')
+        self.assertFalse(job.take_error_ack())
+        job.add('Alert: Could not install app.ipa to unknown.\nEnter verification code:')
+        self.assertTrue(job.view()['needs_input'])
+        self.assertFalse(job.take_error_ack())
 
 if __name__ == "__main__":
     unittest.main()

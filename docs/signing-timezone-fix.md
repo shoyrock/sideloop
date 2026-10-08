@@ -25,13 +25,22 @@ with a correct timestamp, account/Anisette authentication needs further diagnosi
 
 ## Patch
 
-Only `scripts/refresh.sh` changes at runtime:
+Three small runtime files change:
 
 - Run AltServer with `TZ=UTC` in both interactive and automatic modes. The parent
   process retains its configured timezone, so log dates remain local.
+- Run the Anisette helper in UTC as well: its v1 endpoint otherwise labels a
+  local calendar timestamp as UTC. Sideloop retains its configured timezone.
 - Capture interactive output while retaining its terminal input, including 2FA.
 - Treat an explicit AltServer Error/Exception as failure even when its exit code
   is 0. Report `-22411` as an Apple sign-in rejection instead of a Wi-Fi problem.
+- Acknowledge AltServer's terminal keypress pause after an installation or Anisette
+  error alert, so a failed browser job ends and records the failure. Verification
+  code prompts still require user input.
+
+On the live original image, changing the entire container to UTC did not resolve
+the Apple rejection. This patch corrects reproducible clock and error-handling
+defects; it does not establish the remaining cause of `-22411`.
 
 No account feature, binary upgrade, app metadata migration, credential change,
 pairing reset, or Anisette identity reset is included.
@@ -85,9 +94,10 @@ docker run --rm --network none --add-host gsa.apple.com:127.0.0.1 \
   sideloop:signing-fix-amd64 /tests/reproduce_signing_clock.py
 ```
 
-Two regression tests verify UTC signing, preserved local log timestamps, accurate
-failure state/history, and interactive 2FA input. Container checks verify helper
-services, process recovery, shutdown, and persistent data. Physical-device Apple
+Four regression tests verify UTC signing, preserved local log timestamps, accurate
+failure state/history, interactive 2FA input, and completion after an error pause.
+Container checks verify the actual helper's UTC timestamp with a local container
+timezone, services, process recovery, shutdown, and persistent data. Physical-device Apple
 sign-in and installation require a live retry; they are not proven by fake services.
 
 The local exported image is `sideloop-signing-fix-amd64.tar.gz`. To test on Unraid,
