@@ -50,7 +50,12 @@ cd sideloop
 TZ=America/New_York docker compose -f docker-compose.registry.yml up -d
 ```
 
-Open `http://<server-ip>:8080`. The published image is the tested release archive,
+Open `http://<server-ip>:18763`. The Unraid template and registry Compose file
+set `UI_PORT=18763` to avoid the commonly used 8080 port. Keep host networking
+for device discovery. You can choose another available port with `UI_PORT`;
+on Unraid, update the advanced WebUI URL to match it.
+
+The published image is the tested release archive,
 verified by SHA-256 before publication. Only **linux/amd64** is published here.
 Source builds for other architectures are described below.
 
