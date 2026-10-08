@@ -50,8 +50,8 @@ cd sideloop
 TZ=America/New_York docker compose -f docker-compose.registry.yml up -d
 ```
 
-Open `http://<server-ip>:18763`. The Unraid template and registry Compose file
-set `UI_PORT=18763` to avoid the commonly used 8080 port. Keep host networking
+Open `http://<server-ip>:8743`. The Unraid template and registry Compose file
+set `UI_PORT=8743` to avoid the commonly used 8080 port. Keep host networking
 for device discovery. You can choose another available port with `UI_PORT`;
 on Unraid, update the advanced WebUI URL to match it.
 

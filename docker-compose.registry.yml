@@ -9,7 +9,7 @@ services:
     network_mode: host
     privileged: true
     environment:
-      UI_PORT: ${UI_PORT:-18763}
+      UI_PORT: ${UI_PORT:-8743}
       MUX: builtin
       ANISETTE_SERVER: http://127.0.0.1:6969
       TZ: ${TZ:-UTC}

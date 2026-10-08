@@ -12,7 +12,7 @@ curl -fL https://raw.githubusercontent.com/shoyrock/sideloop/main/templates/side
 ```
 
 In **Docker > Add Container**, select **Sideloop** from your user templates and
-click **Apply**. Open `http://<unraid-ip>:18763`, set the UI password and pair
+click **Apply**. Open `http://<unraid-ip>:8743`, set the UI password and pair
 your unlocked device over USB. Add your IPA and throwaway Apple ID in the UI.
 
 Keep **Host** networking and **Privileged** enabled for the existing USB/Wi-Fi
@@ -24,15 +24,15 @@ The default persistent directory is `/mnt/user/appdata/sideloop`. If you change
 it, change the pairing-record path to the corresponding `lockdown` subdirectory.
 Back up the whole appdata directory. Stop an existing Sideloop or Anisette
 deployment before starting this one to avoid host port conflicts. The UI uses
-18763; the local helper services use 6969 and 27015.
+8743; the local helper services use 6969 and 27015.
 
-The template sets the existing `UI_PORT` environment variable to `18763`.
+The template sets the existing `UI_PORT` environment variable to `8743`.
 This also updates the container health check; the image does not need rebuilding.
 If you already installed Sideloop, edit the container, add a **Variable** with
-key `UI_PORT` and value `18763`, and set the advanced **WebUI** field to
-`http://[IP]:18763/`. Click **Apply**. Keep network type **Host**.
+key `UI_PORT` and value `8743`, and set the advanced **WebUI** field to
+`http://[IP]:8743/`. Click **Apply**. Keep network type **Host**.
 
-If 18763 is also occupied, choose another available port and change both the
+If 8743 is also occupied, choose another available port and change both the
 variable and WebUI URL. An arbitrary port cannot be guaranteed free on every
 server. No port mapping is needed with Host networking.
 
