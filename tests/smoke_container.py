@@ -124,10 +124,10 @@ def main():
         for source in (ROOT / "sideloop").iterdir():
             if source.is_file():
                 expected = hashlib.sha256(source.read_bytes()).hexdigest()
-                check(file_hash(f"/opt/sideloop/{source.name}") == expected, f"application file {source.name} copied unchanged")
+                check(file_hash(f"/opt/sideloop/{source.name}") == expected, f"application file {source.name} matches checkout")
         for name in ("refresh.sh", "probe.sh"):
             expected = hashlib.sha256((ROOT / "scripts" / name).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
-            check(file_hash(f"/usr/local/bin/{name}") == expected, f"{name} behavior unchanged; Linux line endings")
+            check(file_hash(f"/usr/local/bin/{name}") == expected, f"{name} matches checkout; Linux line endings")
 
         auth_state, _ = request("/api/auth")
         check(not auth_state["has_password"], "fresh persistent volume starts with normal setup flow")

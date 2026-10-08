@@ -268,14 +268,21 @@ out="$(mktemp)"
 trap 'rm -f "$STATE_DIR/.running" "$out"' EXIT
 set +e
 if [[ -t 0 && -t 1 ]]; then
-  timeout --foreground 2400 "$ALTSERVER_BIN" -u "$DEVICE_UDID" -a "$APPLE_ID" -p "$APPLE_PASSWORD" "$IPA_PATH"
-  rc=$?
-else
-  timeout 2400 "$ALTSERVER_BIN" -u "$DEVICE_UDID" -a "$APPLE_ID" -p "$APPLE_PASSWORD" "$IPA_PATH" </dev/null 2>&1 \
+  # AltServer interprets Anisette's UTC timestamp as local time. Scope UTC to
+  # the signing process so authentication stays correct and logs keep their TZ.
+  TZ=UTC timeout --foreground 2400 "$ALTSERVER_BIN" -u "$DEVICE_UDID" -a "$APPLE_ID" -p "$APPLE_PASSWORD" "$IPA_PATH" 2>&1 \
     | tee "$out"
   rc=${PIPESTATUS[0]}
-  tr '\r' '\n' < "$out" | grep -vE "$NOISE" | cut -c1-400 >> "$LOG_FILE"
+else
+  TZ=UTC timeout 2400 "$ALTSERVER_BIN" -u "$DEVICE_UDID" -a "$APPLE_ID" -p "$APPLE_PASSWORD" "$IPA_PATH" </dev/null 2>&1 \
+    | tee "$out"
+  rc=${PIPESTATUS[0]}
 fi
+tr '\r' '\n' < "$out" | grep -vE "$NOISE" | cut -c1-400 >> "$LOG_FILE"
+# AltServer catches exceptions and still exits 0. Its explicit failure must
+# take precedence over a recent provisioning profile left by an earlier run.
+reported_error="$(grep -E '^(Error:|Exception:)' "$out" | tail -n1 | cut -c1-240)"
+if (( rc == 0 )) && [[ -n "$reported_error" ]]; then rc=1; fi
 set -e
 
 if (( rc == 0 )) && stamp_success; then
@@ -287,7 +294,11 @@ if (( rc == 0 )) && stamp_success; then
 fi
 
 hint=""
-if (( rc == 0 )); then
+if grep -q -- '-22411' "$out"; then
+  hint="Apple rejected sign-in (-22411); the app was not signed or installed"
+elif [[ -n "$reported_error" ]]; then
+  hint="$reported_error"
+elif (( rc == 0 )); then
   rc=1
   hint="AltServer finished, but the app isn't on the device (did it lock or leave Wi-Fi mid-copy?)"
 elif grep -qiE 'two.?factor code|verification code' "$out"; then
