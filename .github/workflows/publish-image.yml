@@ -1,0 +1,45 @@
+name: Publish tested amd64 image
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release containing the tested Docker archive
+        required: true
+        default: all-in-one-amd64-2026.10.08
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-image
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+      IMAGE: ghcr.io/shoyrock/sideloop
+    steps:
+      - name: Download and verify the tested image
+        run: |
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern sideloop-all-in-one-amd64.tar.gz
+          echo 'd73ab9290ae249a5ca802cb2fb2f773fa22b9e758ab2d89322e97a3951bcfc59  sideloop-all-in-one-amd64.tar.gz' | sha256sum --check
+          docker load -i sideloop-all-in-one-amd64.tar.gz
+          test "$(docker image inspect sideloop:all-in-one --format '{{.Os}}/{{.Architecture}}')" = linux/amd64
+      - name: Publish to GitHub Container Registry
+        run: |
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          for tag in latest all-in-one all-in-one-amd64 "$RELEASE_TAG"; do
+            docker tag sideloop:all-in-one "$IMAGE:$tag"
+            docker push "$IMAGE:$tag"
+          done
+          docker logout ghcr.io
+          echo "Published \`$IMAGE:all-in-one-amd64\` from the verified release archive." >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,19 @@
+name: sideloop
+
+services:
+  app:
+    image: ghcr.io/shoyrock/sideloop:all-in-one-amd64
+    container_name: sideloop
+    restart: unless-stopped
+    stop_grace_period: 45s
+    network_mode: host
+    privileged: true
+    environment:
+      MUX: builtin
+      ANISETTE_SERVER: http://127.0.0.1:6969
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./data:/data
+      - ./data/lockdown:/var/lib/lockdown
+      - /run/udev:/run/udev:ro
+      - /dev/bus/usb:/dev/bus/usb

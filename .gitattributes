@@ -1,1 +1,2 @@
 altserver/*.patch -text
+*.sh text eol=lf

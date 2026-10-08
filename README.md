@@ -18,6 +18,11 @@ A small self-hosted service with a web UI for any Linux machine (amd64 or arm64)
 - [x] Self-hosted Apple sign-in via [anisette-v3-server](https://github.com/Dadoum/anisette-v3-server)
 - [x] Python standard library only, one Docker image for amd64 and arm64
 
+This checkout packages Sideloop and Anisette in **one container**. The signing
+code, authentication, UI, and Linux USB/network permissions are unchanged.
+Supervisor manages both services, and Anisette keeps its original service
+account. All persistent data, including Anisette, lives under `./data`.
+
 ## Demo
 
 https://github.com/user-attachments/assets/8c6b799d-b9e7-4a15-898d-d96a2af8e876
@@ -32,6 +37,23 @@ A two-minute narrated walkthrough: setup, adding devices and apps, the first ins
 
 ## Quick Start
 
+### Pull the published amd64 image
+
+For an Intel/AMD 64-bit Linux server, use
+`ghcr.io/shoyrock/sideloop:all-in-one-amd64`. This includes the Anisette helper
+in the same container. See [the Unraid template and installation instructions](templates/README.md)
+for Unraid, or clone this fork and run:
+
+```bash
+git clone https://github.com/shoyrock/sideloop.git
+cd sideloop
+TZ=America/New_York docker compose -f docker-compose.registry.yml up -d
+```
+
+Open `http://<server-ip>:8080`. The published image is the tested release archive,
+verified by SHA-256 before publication. Only **linux/amd64** is published here.
+Source builds for other architectures are described below.
+
 Prerequisites
 
 - Docker with Compose
@@ -39,22 +61,80 @@ Prerequisites
 
 Run on Linux
 
+From this consolidated checkout (for the exported image, use the server
+instructions below):
+
 ```bash
-git clone https://github.com/filippofinke/sideloop.git
-cd sideloop
 cp .env.example .env
-docker compose up -d
+docker compose up -d --build
 ```
 
 The first build compiles AltServer, which takes a few minutes. On a small board like a Raspberry Pi 3 it is much faster to build on another arm64 machine and copy the image over:
 
 ```bash
-docker build --platform linux/arm64 -t sideloop .
-docker save sideloop | gzip | ssh pi@<host> 'gunzip | docker load'
+docker build --platform linux/arm64 -t sideloop:all-in-one .
+docker save sideloop:all-in-one | gzip | ssh pi@<host> 'gunzip | docker load'
 ssh pi@<host> 'cd sideloop && docker compose up -d --no-build'
 ```
 
 Open `http://<host>:8080` and set a password. Then pair a device over USB, add an IPA and enter your Apple ID.
+
+### Run the exported image on a Linux server
+
+Copy `sideloop-all-in-one-amd64.tar.gz` and `docker-compose.server.yml` from
+the `artifacts` directory to a folder on your Intel/AMD 64-bit server. Then run:
+
+```bash
+docker load -i sideloop-all-in-one-amd64.tar.gz
+TZ=America/New_York docker compose -f docker-compose.server.yml up -d
+docker compose -f docker-compose.server.yml ps
+```
+
+The Compose file creates one container named `sideloop`. Open
+`http://<server-ip>:8080`. Pair over USB once, then use the same LAN for Wi-Fi
+refreshes. The first start downloads Apple's Anisette libraries and initializes
+its identity; the health check allows five minutes for this initialization.
+Internet access is still needed for Apple sign-in and signing.
+
+To run without Compose:
+
+```bash
+mkdir -p data/lockdown
+docker run -d --name sideloop --restart unless-stopped \
+  --stop-timeout 45 --network host --privileged \
+  -e TZ=America/New_York \
+  -v "$PWD/data:/data" \
+  -v "$PWD/data/lockdown:/var/lib/lockdown" \
+  -v /run/udev:/run/udev:ro \
+  -v /dev/bus/usb:/dev/bus/usb \
+  sideloop:all-in-one
+```
+
+Back up `data` to preserve apps, configuration, pairing records, signing
+certificates, and Anisette identity. Anisette listens inside this container on
+`127.0.0.1:6969`; no separate helper container is needed. The health check checks
+the UI, Anisette, and (in Linux builtin mode) the device connection service.
+View logs with `docker logs sideloop`.
+
+### Migrate an existing two-container installation
+
+Stop the old deployment first. Keep the existing `data` directory. Before
+starting the new image, copy the old Anisette volume's contents into
+`data/anisette` so its identity and downloaded libraries are preserved. The
+default old volume name was `sideloop_anisette_data`; confirm yours with
+`docker volume ls`. For that default name, run from the installation directory:
+
+```bash
+mkdir -p data/anisette
+docker run --rm --entrypoint /bin/sh \
+  -v sideloop_anisette_data:/old:ro \
+  -v "$PWD/data/anisette:/new" \
+  sideloop:all-in-one -c 'cp -a /old/. /new/'
+docker compose -f docker-compose.server.yml up -d
+```
+
+Keep the old volume until the new deployment is verified. Without migration,
+Anisette initializes a fresh identity on first start.
 
 Run on macOS
 

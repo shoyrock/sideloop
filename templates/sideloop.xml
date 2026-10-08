@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>Sideloop</Name>
+  <Repository>ghcr.io/shoyrock/sideloop:all-in-one-amd64</Repository>
+  <Registry>https://github.com/shoyrock/sideloop/pkgs/container/sideloop</Registry>
+  <Network>host</Network>
+  <Shell>bash</Shell>
+  <Privileged>true</Privileged>
+  <ExtraParams>--stop-timeout=45</ExtraParams>
+  <Icon>https://raw.githubusercontent.com/shoyrock/sideloop/main/.github/logo.png</Icon>
+  <WebUI>http://[IP]:8080/</WebUI>
+  <Overview>Keeps sideloaded iPhone and iPad apps signed with a free Apple ID and refreshes them over Wi-Fi. This amd64 image includes Sideloop, AltServer, Anisette, usbmuxd and netmuxd in one container. Pair an unlocked device over USB first, then keep the device on the same LAN for refreshes. Settings, apps, signing data, pairing records and Anisette identity persist in appdata. Uses the original application's host networking and privileged USB access.</Overview>
+  <Project>https://github.com/shoyrock/sideloop</Project>
+  <Support>https://github.com/shoyrock/sideloop/issues</Support>
+  <TemplateURL>https://raw.githubusercontent.com/shoyrock/sideloop/main/templates/sideloop.xml</TemplateURL>
+  <ReadMe>https://raw.githubusercontent.com/shoyrock/sideloop/main/README.md</ReadMe>
+  <Category>Tools:Utilities</Category>
+  <ExtraSearchTerms>ios iphone ipad sideload altserver anisette</ExtraSearchTerms>
+  <Requires>Intel/AMD 64-bit server, USB access for initial device pairing, same LAN as the device, internet access for Apple signing and a throwaway Apple ID. Host ports 8080 (web UI), 6969 (local Anisette) and 27015 (local device service) must be available.</Requires>
+  <Date>2026-10-08</Date>
+  <MinVer>6.9</MinVer>
+  <License>MIT</License>
+  <Config Name="Appdata" Target="/data" Default="/mnt/user/appdata/sideloop" Mode="rw" Description="Persists apps, settings, signing data and Anisette identity. If you change this path, change Pairing Records to its lockdown subdirectory too." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/sideloop</Config>
+  <Config Name="Pairing Records" Target="/var/lib/lockdown" Default="/mnt/user/appdata/sideloop/lockdown" Mode="rw" Description="USB pairing records. Keep this inside Appdata so one backup covers all persistent data." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/sideloop/lockdown</Config>
+  <Config Name="USB Devices" Target="/dev/bus/usb" Default="/dev/bus/usb" Mode="rw" Description="USB devices for initial iPhone/iPad pairing and USB installation." Type="Path" Display="advanced" Required="true" Mask="false">/dev/bus/usb</Config>
+  <Config Name="Udev" Target="/run/udev" Default="/run/udev" Mode="ro" Description="Host device metadata used by usbmuxd." Type="Path" Display="advanced" Required="true" Mask="false">/run/udev</Config>
+  <Config Name="Timezone" Target="TZ" Default="America/New_York" Description="Timezone for schedules and logs, for example America/New_York or Europe/London." Type="Variable" Display="always" Required="true" Mask="false">America/New_York</Config>
+  <Config Name="Device Connection Mode" Target="MUX" Default="builtin" Description="Use the bundled USB and Wi-Fi connection services." Type="Variable" Display="advanced" Required="true" Mask="false">builtin</Config>
+  <Config Name="Anisette Server" Target="ANISETTE_SERVER" Default="http://127.0.0.1:6969" Description="Bundled Anisette service. No separate container is needed." Type="Variable" Display="advanced" Required="true" Mask="false">http://127.0.0.1:6969</Config>
+</Container>
