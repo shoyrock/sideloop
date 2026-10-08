@@ -1,0 +1,6 @@
+# Application-only fix on the existing single-account release.
+FROM ghcr.io/shoyrock/sideloop@sha256:80e8d5e0d00492292e3950386971fdd171f2557d2bacab4474a28779dffd32be
+COPY scripts/refresh.sh /usr/local/bin/refresh.sh
+COPY sideloop/jobs.py /opt/sideloop/jobs.py
+COPY container/supervisord.conf /etc/sideloop/supervisord.conf
+RUN sed -i 's/\r$//' /usr/local/bin/refresh.sh && chmod +x /usr/local/bin/refresh.sh

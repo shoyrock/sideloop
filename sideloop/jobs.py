@@ -13,6 +13,8 @@ from . import config
 MASK = "••••••••"
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 PROMPT = re.compile(r"two.?factor code|verification code|enter (the )?(2fa |verification )?code", re.I)
+ERROR_ALERT = re.compile(r"^Alert: (?:Could not install|AnisetteData error)")
+ERROR_DISMISS = re.compile(r"^Press any key to continue\.\.\.$")
 SECRET = re.compile(r"^(Data|Value) ?: |^X-(Apple|Mme|MMe)-|^(MachineID|One-Time Password|Local User ID|Device UDID|"
                     r"Device Description|Date|Sanitized client info) ?:|^Byte:|^(HMAC_OUT|NP):|anisette|"
                     r"^Received (auth )?response|^Signing: ")
@@ -36,6 +38,7 @@ class Job:
         self.id, self.kind, self.title = secrets.token_hex(4), kind, title
         self.started, self.ended, self.rc = time.time(), None, None
         self.lines, self.partial, self.needs_input = [], "", False
+        self.error_alert, self.error_ack_pending = False, False
         self.stage, self.fraction, self.app = None, 0.0, None
         self.pid, self.fd, self.cancelled = None, None, False
         self.lock = threading.Lock()
@@ -64,9 +67,13 @@ class Job:
                     self.needs_input = True
             if len(self.partial) < 160 and PROMPT.search(self.partial):
                 self.needs_input = True
+            self._error_prompt(self.partial.strip())
             self.lines = self.lines[-1500:]
 
     def _track(self, line):
+        if ERROR_ALERT.match(line):
+            self.error_alert = True
+        self._error_prompt(line)
         if line.startswith(("Got token for", "Fetching team")):
             self.needs_input = False
         if m := PROGRESS.match(line):
@@ -86,6 +93,18 @@ class Job:
             if m := APP_START.search(line):
                 self.app = m.group(1)
             self.stage, self.fraction = "signin", 0.0
+
+    def _error_prompt(self, line):
+        # AltServer pauses after an error alert. Acknowledge only that pause;
+        # verification codes must still come from the user.
+        if self.error_alert and ERROR_DISMISS.fullmatch(line):
+            self.error_alert, self.error_ack_pending = False, True
+            self.needs_input = False
+
+    def take_error_ack(self):
+        with self.lock:
+            pending, self.error_ack_pending = self.error_ack_pending, False
+            return pending
 
     def say(self, line):
         self.add(line + "\n")
@@ -179,6 +198,8 @@ def run_pty(job, argv):
                 if not data:
                     break
                 job.add(data.decode("utf-8", "replace"))
+                if job.take_error_ack():
+                    os.write(fd, b"\n")
             elif status is None:
                 wp, st = os.waitpid(pid, os.WNOHANG)
                 if wp:

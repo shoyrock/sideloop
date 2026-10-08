@@ -94,6 +94,7 @@ def main():
         docker(
             "run", "-d", "--name", NAME, "--privileged", "--stop-timeout", "45",
             "-p", "127.0.0.1:18080:8080",
+            "-e", "TZ=America/New_York",
             "--mount", f"type=volume,source={VOLUME},target=/data", IMAGE,
         )
         created = True
@@ -109,6 +110,8 @@ def main():
         anisette_pid = supervisor_pid("anisette")
         owner = inside("python3", "-c", f"import os,pwd; print(pwd.getpwuid(os.stat('/proc/{anisette_pid}').st_uid).pw_name)")
         check(owner == "Alcoholic", "Anisette retains its upstream service account")
+        clock_code = "import datetime as dt,json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:6969')); t=dt.datetime.fromisoformat(d['X-Apple-I-Client-Time'].replace('Z','+00:00')); print(abs((dt.datetime.now(dt.timezone.utc)-t).total_seconds())<10)"
+        check(inside("python3", "-c", clock_code) == "True", "Anisette emits the correct UTC time even with a local container timezone")
 
         # This upstream version prints usage but exits 1 for its advertised
         # help flag. Preserve it; this check only establishes binary startup.
@@ -124,10 +127,10 @@ def main():
         for source in (ROOT / "sideloop").iterdir():
             if source.is_file():
                 expected = hashlib.sha256(source.read_bytes()).hexdigest()
-                check(file_hash(f"/opt/sideloop/{source.name}") == expected, f"application file {source.name} copied unchanged")
+                check(file_hash(f"/opt/sideloop/{source.name}") == expected, f"application file {source.name} matches checkout")
         for name in ("refresh.sh", "probe.sh"):
             expected = hashlib.sha256((ROOT / "scripts" / name).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
-            check(file_hash(f"/usr/local/bin/{name}") == expected, f"{name} behavior unchanged; Linux line endings")
+            check(file_hash(f"/usr/local/bin/{name}") == expected, f"{name} matches checkout; Linux line endings")
 
         auth_state, _ = request("/api/auth")
         check(not auth_state["has_password"], "fresh persistent volume starts with normal setup flow")
@@ -167,6 +170,7 @@ def main():
         docker(
             "run", "-d", "--name", NAME, "--privileged", "--stop-timeout", "45",
             "-p", "127.0.0.1:18080:8080",
+            "-e", "TZ=America/New_York",
             "--mount", f"type=volume,source={VOLUME},target=/data", IMAGE,
         )
         created = True
