@@ -13,6 +13,8 @@ from . import accounts, config
 MASK = "••••••••"
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 PROMPT = re.compile(r"two.?factor code|verification code|enter (the )?(2fa |verification )?code", re.I)
+ERROR_ALERT = re.compile(r"^Alert: (?:Could not install|AnisetteData error)")
+ERROR_DISMISS = re.compile(r"^Press any key to continue\.\.\.$")
 SECRET = re.compile(r"^(Data|Value) ?: |^X-(Apple|Mme|MMe)-|^(MachineID|One-Time Password|Local User ID|Device UDID|"
                     r"Device Description|Date|Sanitized client info) ?:|^Byte:|^(HMAC_OUT|NP):|anisette|"
                     r"^Received (auth )?response|^Signing: ")
@@ -20,6 +22,10 @@ PROGRESS = re.compile(r"^(Signing|Installation) Progress:\s*([0-9.eE+-]+)")
 NOISE = re.compile(r"^Writing File: ")
 APP_START = re.compile(r"\[(.+?)\] (?:signing and installing|no signature on record|signature has)")
 MAX_LINE = 400
+VERIFY_PUBLIC = re.compile(r'^(?:Enter two factor code$|Requires two factor\.\.\.$|'
+                          r'Authentication failed:|Account authentication succeeded\.$|'
+                          r'Signing in to Apple to verify|Account verification (?:cancelled|timed out)|'
+                          r'Apple sign-in was not verified)')
 
 
 def hidden(line):
@@ -42,6 +48,7 @@ class Job:
         self.id, self.kind, self.title = secrets.token_hex(4), kind, title
         self.started, self.ended, self.rc = time.time(), None, None
         self.lines, self.partial, self.needs_input = [], "", False
+        self.error_alert, self.error_ack_pending = False, False
         self.stage, self.fraction, self.app = None, 0.0, None
         self.pid, self.fd, self.cancelled = None, None, False
         self.lock = threading.Lock()
@@ -62,6 +69,8 @@ class Job:
                 if not t:
                     continue
                 self._track(t)
+                if self.kind == 'verify' and not VERIFY_PUBLIC.match(t):
+                    continue
                 if hidden(t):
                     continue
                 self.lines.append(line.rstrip())
@@ -69,9 +78,13 @@ class Job:
                     self.needs_input = True
             if len(self.partial) < 160 and PROMPT.search(self.partial):
                 self.needs_input = True
+            self._error_prompt(self.partial.strip())
             self.lines = self.lines[-1500:]
 
     def _track(self, line):
+        if ERROR_ALERT.match(line):
+            self.error_alert = True
+        self._error_prompt(line)
         if line.startswith(("Got token for", "Fetching team")):
             self.needs_input = False
         if m := PROGRESS.match(line):
@@ -92,17 +105,31 @@ class Job:
                 self.app = m.group(1)
             self.stage, self.fraction = "signin", 0.0
 
+    def _error_prompt(self, line):
+        if self.error_alert and ERROR_DISMISS.fullmatch(line):
+            self.error_alert, self.error_ack_pending = False, True
+            self.needs_input = False
+
+    def take_error_ack(self):
+        with self.lock:
+            pending, self.error_ack_pending = self.error_ack_pending, False
+            return pending
+
     def say(self, line):
         self.add(line + "\n")
 
     def send(self, text):
-        if self.fd is None:
-            raise RuntimeError("this step doesn't take input")
+        text = text.strip()
+        if not re.fullmatch(r'[0-9]{6}', text):
+            raise ValueError('enter the six-digit Apple verification code')
         with self.lock:
+            if self.fd is None or not self.needs_input or not self.running:
+                raise ValueError('Apple is not waiting for a verification code')
+            self.secrets.append(text)
             self.needs_input = False
             self.lines.append((mask(self.partial.strip(), self.secrets) + " ••••••").strip())
             self.partial = ""
-        os.write(self.fd, (text.strip() + "\n").encode())
+            os.write(self.fd, (text + "\n").encode())
 
     def cancel(self):
         self.cancelled = True
@@ -118,7 +145,8 @@ class Job:
                  "ended": int(self.ended) if self.ended else None, "rc": self.rc, "running": self.running,
                  "needs_input": self.needs_input, "accepts_input": self.fd is not None,
                  "stage": self.stage, "fraction": round(self.fraction, 4), "app": self.app,
-                 "total": len(self.lines), "partial": mask(self.partial.strip(), self.secrets),
+                 "total": len(self.lines), "partial": mask(self.partial.strip(), self.secrets)
+                 if self.kind != 'verify' or VERIFY_PUBLIC.match(self.partial.strip()) else '',
                  "last": self.lines[-1] if self.lines else ""}
             if since is not None:
                 v["lines"] = self.lines[since:]
@@ -165,11 +193,13 @@ class Jobs:
             return self.auto
 
 
-def run_pty(job, argv):
+def run_pty(job, argv, env=None, cwd=None):
     pid, fd = pty.fork()
     if pid == 0:
         try:
-            os.execvp(argv[0], argv)
+            if cwd is not None:
+                os.chdir(cwd)
+            os.execvpe(argv[0], argv, env if env is not None else os.environ)
         finally:
             os._exit(127)
     job.pid, job.fd = pid, fd
@@ -184,6 +214,8 @@ def run_pty(job, argv):
                 if not data:
                     break
                 job.add(data.decode("utf-8", "replace"))
+                if job.take_error_ack():
+                    os.write(fd, b'\n')
             elif status is None:
                 wp, st = os.waitpid(pid, os.WNOHANG)
                 if wp:

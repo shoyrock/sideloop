@@ -5,7 +5,7 @@ import time
 import urllib.parse
 from pathlib import Path
 
-from . import accounts, auth, config, ipa, pairing, store
+from . import accounts, auth, config, ipa, pairing, store, verification
 from .config import LIFETIME_DAYS, MUX, PENDING_IPA, STATE
 from .jobs import redact, run_capture, run_pty
 from .watcher import configured
@@ -20,6 +20,7 @@ MAX_IPA = 4 * 1024 ** 3
 class App:
     def __init__(self, jobs, health, muxers):
         self.jobs, self.health, self.muxers = jobs, health, muxers
+        accounts.clear_interrupted_verifications()
 
     def state(self):
         cfg = config.read()
@@ -133,6 +134,13 @@ class App:
                         accounts.pin(app_id, udid)
             accounts.assign(udid, str(data.get("account", "")), app["id"] if app else None)
 
+    def verify_account(self, data):
+        account_id = str(data.get('account', 'default'))
+        if not accounts.ready(account_id):
+            raise ValueError('save the Apple account email and password first')
+        return {"job": self.jobs.start('verify', 'Verify Apple Account',
+                                      lambda j: verification.verify(j, account_id)).id}
+
     def settings(self, data):
         values = {}
         if "auto_check" in data:
@@ -192,6 +200,7 @@ class App:
             "/api/appleid": self.apple_id,
             "/api/account/save": self.save_account,
             "/api/account/assign": self.assign_account,
+            "/api/account/verify": self.verify_account,
             "/api/settings": self.settings,
             "/api/refresh": self.refresh,
             "/api/recheck": self.recheck,

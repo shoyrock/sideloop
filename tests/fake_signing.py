@@ -38,6 +38,13 @@ elif command == "AltServer":
     app = Path(args[-1]).parent.name
     team = hashlib.sha256(email.encode()).hexdigest()[:10].upper()
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    # Plist dates have whole-second precision. Synthetic signing finishes far
+    # faster than a real Apple request; keep issuance dates distinct so tests
+    # don't accidentally select a tied profile from the other account.
+    clock = root / 'profile-clock'
+    if clock.exists():
+        now = max(now, datetime.datetime.fromisoformat(clock.read_text()) + datetime.timedelta(seconds=1))
+    clock.write_text(now.replace(microsecond=0).isoformat())
     token = str(uuid.uuid4())
     payload = root / "payload.plist"
     payload.write_bytes(plistlib.dumps({

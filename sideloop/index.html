@@ -404,9 +404,10 @@ function renderSheet() {
   let mode, main;
   if (asking) { mode = "ask"; main = `<form class="otp" id="askf">
       <div class="appicon md" style="background:linear-gradient(160deg,#8e8e93,#636366)">${ic("lock-closed", 26)}</div>
-      <h2>Verification Code</h2><p>Enter the code sent to your Apple devices.</p>
-      <input class="code" id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="••••••" autofocus>
+      <h2>Apple Verification Code</h2><p>Apple requested verification. Enter the six-digit code from your trusted Apple device.</p>
+      <input class="code" id="code" aria-label="Apple verification code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6" required placeholder="••••••" autofocus>
       <button class="btn" style="width:min(320px,100%)">Continue</button></form>`; }
+  else if (j.running && j.kind === "verify") { mode = "spin"; main = `<div class="state">${spinner(30)}<div class="msg">Verifying your Apple Account…</div></div>`; }
   else if (j.running && j.stage) {
     mode = "progress";
     const p = Math.round(pct(j) * 100), at = STEPS.findIndex(([k]) => k === j.stage);
@@ -417,7 +418,7 @@ function renderSheet() {
         ${i < at ? ic("checkmark-circle", 22) : i === at ? spinner(20) : `<span class="dot"></span>`}<span class="k">${l}</span></div>`).join("")}</div></div>`;
   }
   else if (j.running) { mode = "spin"; main = `<div class="state"><span style="color:var(--label-2)">${spinner(30)}</span><div class="msg">${esc(last)}</div></div>`; }
-  else if (j.rc === 0) { mode = "ok"; main = `<div class="state"><div class="glyph ok">${ic("checkmark", 32)}</div><div class="ttl">Done</div>${j.kind === "refresh" && j.app ? `<div class="msg">${who} is signed and installed.</div>` : ""}</div>`; }
+  else if (j.rc === 0) { mode = "ok"; main = `<div class="state"><div class="glyph ok">${ic("checkmark", 32)}</div><div class="ttl">${j.kind === "verify" ? "Account Verified" : "Done"}</div>${j.kind === "verify" ? `<div class="msg">Apple accepted your sign-in. No apps were installed.</div>` : j.kind === "refresh" && j.app ? `<div class="msg">${who} is signed and installed.</div>` : ""}</div>`; }
   else { mode = "fail"; main = `<div class="state"><div class="glyph bad">${ic("close", 32)}</div><div class="ttl">Didn't Work</div><div class="msg">${esc(last)}</div></div>`; }
 
   const box = $("#sh-main");
@@ -512,9 +513,11 @@ function settingsView() {
       <div class="cell"><label for="accountedit">Account</label><select class="fi" id="accountedit" ${busy ? "disabled" : ""}>${(S.accounts || []).map(a => `<option value="${esc(a.id)}" ${editingAccount === a.id ? "selected" : ""}>${esc(accountName(a.id))}${a.id === "default" ? " (default)" : ""}</option>`).join("")}<option value="new" ${editingAccount === "new" ? "selected" : ""}>Add another account…</option></select></div>
       <div class="cell"><label for="aid">Email</label><input class="fi" id="aid" type="email" value="${esc(editing ? editing.email : "")}" placeholder="name@example.com" required ${busy ? "disabled" : ""}></div>
       <div class="cell"><label for="apw">Password</label><input class="fi" id="apw" type="password" placeholder="${editing && editing.has_password ? "Saved" : "Required"}" autocomplete="new-password" ${busy ? "disabled" : ""}></div>
-      <button class="cell action" ${busy ? "disabled" : ""}>Save Account</button>
+      <div class="cell"><span class="k">Sign-in status</span><span>${esc(({verified:"Last sign-in verified",failed:"Sign-in failed",checking:"Checking sign-in…",unverified:"Not verified"})[(editing && editing.verification || {}).status] || "Not verified")}</span></div>
+      <button class="cell action" ${busy ? "disabled" : ""}>Save and Verify Account</button>
+      ${editing && editing.has_password ? `<button type="button" class="cell action" id="verifyaccount" ${busy ? "disabled" : ""}>Verify Saved Account</button>` : ""}
     </div></form>
-    <div class="foot">Use the regular password, not an app-specific one. Changing the account for new apps keeps existing apps with their current signer. Selecting a different signer for an existing app may install a separate copy; this selector does not migrate existing app data.</div>
+    <div class="foot">Saving credentials does not verify them. Verification checks sign-in with Apple and asks for a code only if Apple requires it. Use the regular password, not an app-specific one. Changing the account for new apps keeps existing apps with their current signer. Selecting a different signer for an existing app may install a separate copy; this selector does not migrate existing app data.</div>
   </div>
 
   <div class="sect">
@@ -585,7 +588,10 @@ function wire() {
   on("aidf", "onsubmit", e => { e.preventDefault(); act(async () => {
     const r = await api("/api/account/save", {json:{account:editingAccount, apple_id:$("#aid").value, password:$("#apw").value}});
     editingAccount = r.account; $("#apw").value = "";
-  }, "Account saved"); });
+    const check = await api("/api/account/verify", {json:{account:r.account}});
+    watched.add(check.job);
+  }); });
+  on("verifyaccount", "onclick", () => startJob("/api/account/verify", {account:editingAccount}));
   root.querySelectorAll("[data-account-device]").forEach(el => el.onchange = () => act(() =>
     api("/api/account/assign", {json:{device:el.dataset.accountDevice, app:el.dataset.accountApp || null, account:el.value}}), "Signing account saved"));
   on("useipa", "onclick", () => act(async () => { await api("/api/ipa/use", {json:{filename:pending.filename}}); pending = null; }, "App added"));

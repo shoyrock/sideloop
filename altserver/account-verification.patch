@@ -1,0 +1,116 @@
+--- a/src/AltServerMain.cpp
++++ b/src/AltServerMain.cpp
+@@ -19,6 +19,8 @@
+ // AltSign
+ #include "DeviceManager.hpp"
+ #include "Error.hpp"
++#include "AppleAPI.hpp"
++#include "AnisetteDataManager.h"
+ 
+ #include "AltServerApp.h"
+ 
+@@ -80,6 +82,7 @@
+ 			"  -u  --udid UDID        Device's UDID, only needed when installing IPA.\n"
+ 			"  -a  --appleID AppleID  Apple ID to sign the ipa, only needed when installing IPA.\n"
+ 			"  -p  --password passwd  Password of Apple ID, only needed when installing IPA.\n"
++			"      --verify-account  Authenticate without signing or installing an app.\n"
+ 			"  -d  --debug            Print debug output, can be used several times to increase debug level.\n"
+ 			"\n"
+ 			"The following environment var can be set for some special situation:\n"
+@@ -97,24 +100,26 @@
+           {"password",	required_argument,      0, 'p'},
+           //{"ipaddr",	required_argument,		0, 'i'},
+ 		  //{"pairData",	required_argument,      0, 'P'},
++		  {"verify-account", no_argument, 0, 'v'},
+ 		  {"debug",		no_argument,      		0, 'd'},
+           {0, 0, 0, 0}
+         };
+ 	
+ 	char *udid;
+ 	char *ipaddr;
+-	char *appleID;
+-	char *password;
++	char *appleID = nullptr;
++	char *password = nullptr;
+ 	char *pairDataFile;
+ 	
+ 	char *ipaPath = NULL;
+ 	int debugLogLevel = 0;
++	bool verifyAccount = false;
+ 
+ 	while (1) {
+ 		int this_option_optind = optind ? optind : 1;
+ 		int option_index = 0;
+ 
+-		int c = getopt_long (argc, argv, "u:i:a:p:P:d",
++		int c = getopt_long (argc, argv, "u:i:a:p:P:dv",
+ 						long_options, &option_index);
+ 		if (c == -1) break;
+ 
+@@ -127,11 +132,15 @@
+ 			break;
+         case 'a':
+ 			appleID = optarg;
++			break;
+         case 'p':
+             password = optarg;
+ 			break;
+ 		case 'P':
+             pairDataFile = optarg;
++			break;
++		case 'v':
++			verifyAccount = true;
+ 			break;
+ 		case 'd':
+ 			//debugLog = true;
+@@ -152,7 +161,15 @@
+ 	}
+ 
+ 	bool installApp = true;
+-	if (optind == argc) {
++	if (verifyAccount) {
++		if (!appleID) appleID = getenv("ALTSERVER_APPLE_ID");
++		if (!password) password = getenv("ALTSERVER_APPLE_PASSWORD");
++		if (!appleID || !password || optind != argc) {
++			std::cerr << "Account verification needs Apple ID and password, without an IPA." << std::endl;
++			return 1;
++		}
++		installApp = false;
++	} else if (optind == argc) {
+ 		printf("Not supplying ipa, running in server mode!\n");
+         installApp = false;
+     } else if (optind + 1 == argc) {
+@@ -178,6 +195,33 @@
+     
+ 	signal(SIGPIPE, SIG_IGN);
+ 
++
++    if (verifyAccount) {
++        try {
++            auto anisette = AnisetteDataManager::instance()->FetchAnisetteData();
++            auto handler = []() -> pplx::task<std::optional<std::string>> {
++                return pplx::create_task([]() -> std::optional<std::string> {
++                    std::cout << "Enter two factor code" << std::endl;
++                    std::string code;
++                    if (!(std::cin >> code)) return std::nullopt;
++                    return code;
++                });
++            };
++            // Use the same Apple authentication implementation as installation.
++            // Authenticate obtains the Apple session and fetches the account.
++            AppleAPI::getInstance()->Authenticate(appleID, password, anisette, handler).get();
++            std::cout << "Account authentication succeeded." << std::endl;
++            return 0;
++        } catch (Error& error) {
++            std::cerr << "Authentication failed: " << error.localizedDescription()
++                      << " (" << error.code() << ")." << std::endl;
++        } catch (std::exception& error) {
++            // Never print arbitrary response data or credentials.
++            std::cerr << "Authentication failed: signing service could not complete sign-in." << std::endl;
++        }
++        return 1;
++    }
++
+ 	if (installApp) {
+ 		odslog("Installing app...");
+ 		std::shared_ptr<Device> _selectedDevice = std::make_shared<Device>("unknown", udid, Device::Type::All);;
