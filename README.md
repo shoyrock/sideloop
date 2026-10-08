@@ -176,7 +176,7 @@ Pair the device in Finder and enable **Show this iPhone when on Wi-Fi**.
 ## Notes
 
 - Use the Apple ID's **regular password**. App-specific passwords don't work.
-- A **2FA code** is requested only when Apple requires verification. Saving credentials alone does not verify sign-in; use **Save and Verify Account**. The existing trusted-device code flow is supported; SMS delivery/fallback is not added.
+- A **2FA code** is requested only when Apple requires verification. **Sign In and Save Account** verifies sign-in before saving new credentials. Failed attempts preserve existing accounts. The existing trusted-device code flow is supported; SMS delivery/fallback is not added.
 - The device must be **unlocked and on the same Wi-Fi** while a re-sign runs.
 - A free account allows 3 apps per device and 10 App IDs per week. Each app extension needs its own App ID.
 - Trust the developer once in **Settings > General > VPN & Device Management**. Refreshes keep it trusted.

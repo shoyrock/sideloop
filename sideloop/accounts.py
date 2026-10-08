@@ -63,7 +63,8 @@ def ready(account_id):
         return False
 
 
-def save(account_id, email, password=""):
+def prepare(account_id, email, password=""):
+    """Validate candidate credentials without saving or adding an account."""
     email = str(email).strip()
     if "@" not in email or len(email) > 254:
         raise ValueError("enter the Apple ID's email address")
@@ -79,7 +80,14 @@ def save(account_id, email, password=""):
         password = str(password or old["APPLE_PASSWORD"])
         if not password:
             raise ValueError("enter the password")
-        values = {"APPLE_ID": email, "APPLE_PASSWORD": password}
+        return {"APPLE_ID": email, "APPLE_PASSWORD": password}
+
+
+def save(account_id, email, password=""):
+    with _lock:
+        values = prepare(account_id, email, password)
+        new = account_id in (None, "", "new")
+        old = {k: "" for k in ACCOUNT_KEYS} if new else credentials(account_id)
         if account_id == "default":
             config.update(values)
         else:

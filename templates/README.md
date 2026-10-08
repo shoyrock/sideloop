@@ -9,8 +9,9 @@ pairing records, USB mounts and port settings. For subsequent published updates,
 use Unraid's **Check for Updates** and update this container. Checking for updates
 does not install them automatically.
 
-The current image includes multiple signing accounts and **Save and Verify
-Account**. Verification asks for a six-digit code only when Apple requests MFA;
+The current image includes multiple signing accounts and **Sign In and Save
+Account**. Credentials are saved only after successful authentication.
+Verification asks for a six-digit code only when Apple requests MFA;
 accounts without MFA proceed directly. The existing trusted-device code flow is
 supported; SMS delivery/fallback has not been added. Live Apple sign-in and
 installation still require testing on your server.

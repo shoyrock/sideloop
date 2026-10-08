@@ -115,10 +115,10 @@ class App:
         return self.save_account({**data, "account": "default"})
 
     def save_account(self, data):
-        with self.jobs.lock:
-            self.idle()
-            return {"account": accounts.save(data.get("account", "new"), data.get("apple_id", ""),
-                                             data.get("password", ""))}
+        account_id = data.get("account", "new")
+        candidate = accounts.prepare(account_id, data.get("apple_id", ""), data.get("password", ""))
+        return {"job": self.jobs.start('verify', 'Sign In and Save Account',
+                                      lambda j: verification.verify_and_save(j, account_id, candidate)).id}
 
     def assign_account(self, data):
         with self.jobs.lock:

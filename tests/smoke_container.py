@@ -140,10 +140,11 @@ def main():
         state, _ = request("/api/state", cookie=cookie)
         check(state["services"]["anisette"] and state["services"]["muxer"], "authenticated UI reports both internal helpers available")
         request("/api/settings", {"auto_check": False}, cookie)
-        request("/api/appleid", {"apple_id": "first@example.test", "password": "smoke-first"}, cookie)
-        second, _ = request("/api/account/save", {"account": "new", "apple_id": "second@example.test",
-                                                   "password": "smoke-second"}, cookie)
-        second = second["account"]
+        # Seed disposable accounts without sending synthetic credentials to Apple.
+        # The real save/authentication API is covered by the PTY regression tests.
+        second = inside("python3", "-c", "from sideloop import accounts; "
+                        "accounts.save('default','first@example.test','smoke-first'); "
+                        "print(accounts.save('new','second@example.test','smoke-second'))").strip()
         device = "1234567890abcdef1234567890abcdef12345678"
         fixture = "from sideloop import config,store; import json; " \
                   f"store.add_device('{device}','Smoke iPhone'); " \

@@ -1,6 +1,10 @@
 # Apple account verification and conditional MFA
 
-`Save and Verify Account` saves credentials and immediately performs Apple sign-in.
+`Sign In and Save Account` performs Apple sign-in before saving credentials.
+New credentials remain pending in memory until authentication succeeds. A failed,
+cancelled or timed-out attempt does not add a new account or overwrite an existing
+account's credentials, signing cache or verification status. Existing accounts
+remain available for compatibility; this does not require re-adding them.
 `Verify Saved Account` retries a saved account without re-entering its password.
 The six-digit verification field appears only when Apple asks for verification;
 accounts without MFA do not see it. An account is marked verified only after the
@@ -47,12 +51,17 @@ docker run --rm --network none --add-host gsa.apple.com:127.0.0.1 \
 python tests/smoke_container.py sideloop:account-verification-amd64
 ```
 
-Twenty regression tests cover account isolation and PTY authentication with and
+Twenty-six regression tests cover account isolation and PTY authentication with and
 without MFA, wrong codes, rejection, silent exit zero, cancellation, timeout,
 credential changes, and restart. The compiled binary test reaches a loopback-only
 fake Apple endpoint, returns nonzero on rejection, and creates no signing data.
 Browser tests use only synthetic accounts with `tests/fake_auth_preview.py`.
 These checks validate the implementation; they don't claim live Apple sign-in.
+Additional save-flow tests prove credentials are committed only after successful
+authentication, including MFA, and that unsuccessful edits preserve the old account.
+
+See [the authentication comparison](account-authentication-comparison.md) for the
+iloader, SideStore, AltStore and Impactor source used to review the save flow.
 
 ## Pull the published image on Unraid
 

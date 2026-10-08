@@ -51,6 +51,7 @@ class Job:
         self.error_alert, self.error_ack_pending = False, False
         self.stage, self.fraction, self.app = None, 0.0, None
         self.pid, self.fd, self.cancelled = None, None, False
+        self.saved_account = None
         self.lock = threading.Lock()
         self.secrets = accounts.passwords()
 
@@ -132,7 +133,8 @@ class Job:
             os.write(self.fd, (text + "\n").encode())
 
     def cancel(self):
-        self.cancelled = True
+        with self.lock:
+            self.cancelled = True
         if self.pid:
             try:
                 os.killpg(self.pid, signal.SIGTERM)
@@ -147,7 +149,7 @@ class Job:
                  "stage": self.stage, "fraction": round(self.fraction, 4), "app": self.app,
                  "total": len(self.lines), "partial": mask(self.partial.strip(), self.secrets)
                  if self.kind != 'verify' or VERIFY_PUBLIC.match(self.partial.strip()) else '',
-                 "last": self.lines[-1] if self.lines else ""}
+                 "last": self.lines[-1] if self.lines else "", "saved_account": self.saved_account}
             if since is not None:
                 v["lines"] = self.lines[since:]
             return v

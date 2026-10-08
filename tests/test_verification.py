@@ -42,6 +42,9 @@ if mode in ('mfa','wrong','cancel'):
 if mode == 'error':
     print('Authentication failed: This action cannot be completed at this time (-22411).')
     sys.exit(1)
+if mode == 'echo':
+    print('Authentication failed: ' + os.environ['ALTSERVER_APPLE_PASSWORD'])
+    sys.exit(1)
 if mode != 'silent':
     print('Account authentication succeeded.')
 ''')
@@ -155,6 +158,92 @@ if mode != 'silent':
                 time.sleep(0.02)
         self.assertEqual(result['job'], jobs.current.id)
         self.assertEqual(jobs.current.rc, 0)
+
+    def save_attempt(self, mode='success', account='new', email='new@example.test', legacy=False):
+        jobs = Jobs(lambda: None)
+        app = App(jobs, None, None)
+        with patch.dict(os.environ, {'ALTSERVER_BIN': str(self.signer), 'TEST_AUTH': mode}):
+            body = {'account': account, 'apple_id': email, 'password': 'synthetic-password'}
+            result = app.apple_id(body) if legacy else app.save_account(body)
+            job = jobs.current
+            self.assertEqual(result, {'job': job.id})
+            self.wait_saved(job, prompt=mode in ('mfa', 'wrong', 'cancel'))
+        return job
+
+    def wait_saved(self, job, prompt=False):
+        deadline = time.monotonic() + 10
+        while job.running and not (prompt and job.view()['needs_input']):
+            self.assertLess(time.monotonic(), deadline, job.view(0))
+            time.sleep(0.02)
+        if prompt:
+            self.assertTrue(job.view()['needs_input'], job.view(0))
+
+    def test_new_account_is_added_only_after_mfa_succeeds(self):
+        before = accounts.views()
+        job = self.save_attempt('mfa')
+        try:
+            self.assertEqual(accounts.views(), before)
+            self.assertFalse((self.root / 'accounts').exists())
+            self.assertIsNone(job.saved_account)
+            job.send('123456')
+            self.wait_saved(job)
+            self.assertEqual(job.rc, 0, job.view(0))
+            self.assertEqual(accounts.credentials(job.saved_account)['APPLE_ID'], 'new@example.test')
+            self.assertEqual(accounts.verification(job.saved_account)['status'], 'verified')
+            self.assertNotIn('synthetic-password', json.dumps(job.view(0)))
+            self.assertNotIn('123456', json.dumps(job.view(0)))
+        finally:
+            if job.running: job.cancel(); self.wait_saved(job)
+
+    def test_rejected_silent_and_timed_out_saves_do_not_add_accounts(self):
+        before = accounts.views()
+        for mode in ('error', 'silent', 'timeout'):
+            with self.subTest(mode=mode), patch.object(verification, 'AUTH_TIMEOUT', 1):
+                job = self.save_attempt(mode)
+            self.assertNotEqual(job.rc, 0)
+            self.assertIsNone(job.saved_account)
+            self.assertEqual(accounts.views(), before)
+            self.assertFalse((self.root / 'accounts').exists())
+
+    def test_cancelled_and_wrong_mfa_saves_do_not_add_accounts(self):
+        before = accounts.views()
+        for mode in ('wrong', 'cancel'):
+            job = self.save_attempt(mode)
+            if mode == 'wrong': job.send('654321')
+            else: job.cancel()
+            self.wait_saved(job)
+            self.assertNotEqual(job.rc, 0)
+            self.assertEqual(accounts.views(), before)
+            self.assertFalse((self.root / 'accounts').exists())
+
+    def test_failed_password_change_preserves_previous_credentials_and_status(self):
+        config.update({'APPLE_PASSWORD': 'previous-password'})
+        accounts.set_verification('default', 'verified')
+        previous = config.CONFIG.read_bytes()
+        status = accounts.verification('default')
+        job = self.save_attempt('echo', account='default', email='test@example.test')
+        self.assertNotEqual(job.rc, 0)
+        self.assertEqual(config.CONFIG.read_bytes(), previous)
+        self.assertEqual(accounts.verification('default'), status)
+        self.assertNotIn('synthetic-password', json.dumps(job.view(0)))
+
+    def test_successful_password_change_commits_verified_credentials(self):
+        config.update({'APPLE_PASSWORD': 'previous-password'})
+        job = self.save_attempt(account='default', email='test@example.test')
+        self.assertEqual(job.rc, 0, job.view(0))
+        self.assertEqual(job.saved_account, 'default')
+        self.assertEqual(accounts.credentials('default')['APPLE_PASSWORD'], 'synthetic-password')
+        self.assertEqual(accounts.verification('default')['status'], 'verified')
+
+    def test_legacy_account_endpoint_also_verifies_before_saving(self):
+        config.update({'APPLE_ID': '', 'APPLE_PASSWORD': ''})
+        before = config.CONFIG.read_bytes()
+        job = self.save_attempt('error', legacy=True)
+        self.assertNotEqual(job.rc, 0)
+        self.assertEqual(config.CONFIG.read_bytes(), before)
+        job = self.save_attempt(legacy=True)
+        self.assertEqual(job.rc, 0, job.view(0))
+        self.assertEqual(job.saved_account, 'default')
 
 
 if __name__ == '__main__':
