@@ -2,12 +2,14 @@ import http.server
 import json
 import os
 import time
+import traceback
 import urllib.parse
 from pathlib import Path
 
 from . import accounts, auth, config, ipa, pairing, store, verification
 from .config import LIFETIME_DAYS, MUX, PENDING_IPA, STATE
 from .jobs import redact, run_capture, run_pty
+from .log import log
 from .watcher import configured
 
 INDEX = Path(__file__).with_name("index.html")
@@ -222,6 +224,7 @@ def handler(app):
         def send(self, code, body, content_type="application/json", headers=()):
             if not isinstance(body, bytes):
                 body = json.dumps(body).encode()
+            self.replied = True
             self.send_response(code)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
@@ -254,7 +257,27 @@ def handler(app):
             cookie = f"{COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age}"
             self.send(200, {"ok": True}, headers=[("Set-Cookie", cookie)])
 
+        def guarded(self, handle):
+            # A handler that raises would otherwise drop the connection without a
+            # response, which the browser reports only as "Failed to fetch".
+            self.replied = False
+            try:
+                handle()
+            except Exception as e:
+                log(f"{self.command} {self.path.partition('?')[0]} failed:\n{traceback.format_exc().rstrip()}")
+                if not self.replied:
+                    self.error(500, f"{type(e).__name__}: {e}"[:400])
+
         def do_GET(self):
+            self.guarded(self.get)
+
+        def do_POST(self):
+            self.guarded(self.post)
+
+        def do_PUT(self):
+            self.guarded(self.put)
+
+        def get(self):
             path, _, query = self.path.partition("?")
             if path in ("/", "/index.html"):
                 return self.send(200, INDEX.read_bytes(), "text/html; charset=utf-8", [("Content-Security-Policy", CSP)])
@@ -274,7 +297,7 @@ def handler(app):
                 return self.send(200, app.logs())
             self.error(404, "not found")
 
-        def do_POST(self):
+        def post(self):
             path = self.path.partition("?")[0]
             if not self.same_origin():
                 return self.error(403, "bad request origin")
@@ -307,7 +330,7 @@ def handler(app):
             except (ValueError, KeyError) as e:
                 self.error(400, str(e))
 
-        def do_PUT(self):
+        def put(self):
             if self.path.partition("?")[0] != "/api/ipa":
                 return self.error(404, "not found")
             if not self.same_origin():
