@@ -132,10 +132,21 @@ def clear_interrupted_verifications():
 
 
 def _assignments():
+    """Read assignments, tolerating a missing, partial or damaged file.
+
+    A file without one of the sections (written by an earlier build) must not
+    take down every state read and the automatic re-sign loop with a KeyError.
+    """
     path = config.DATA / "signing-accounts.json"
-    if not path.exists():
-        return {"devices": {}, "apps": {}}
-    return json.loads(path.read_text())
+    try:
+        data = json.loads(path.read_text())
+    except (FileNotFoundError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    devices, apps = data.get("devices"), data.get("apps")
+    return {"devices": {k: v for k, v in devices.items() if isinstance(v, str)} if isinstance(devices, dict) else {},
+            "apps": {k: v for k, v in apps.items() if isinstance(v, dict)} if isinstance(apps, dict) else {}}
 
 
 def _write_assignments(data):

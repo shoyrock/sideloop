@@ -50,28 +50,36 @@ class Watcher:
     def loop(self):
         while True:
             time.sleep(5)
-            timer = time.time() >= self.next_run
-            with self.lock:
-                queued = sorted(self.queue)
-            if not timer and not queued:
-                continue
-            cfg = config.read()
-            if cfg["AUTO_CHECK"] != "1" or not configured(cfg):
-                with self.lock:
-                    self.queue.clear()
-                self.schedule()
-                continue
-            job = self.jobs.claim_auto()
-            if not job:
-                continue
+            try:
+                self.tick()
+            except Exception as e:
+                # One bad read must not end automatic re-signing for good.
+                log(f"watcher: {type(e).__name__}: {e}")
+                self.next_run = time.time() + DUE_INTERVAL
+
+    def tick(self):
+        timer = time.time() >= self.next_run
+        with self.lock:
+            queued = sorted(self.queue)
+        if not timer and not queued:
+            return
+        cfg = config.read()
+        if cfg["AUTO_CHECK"] != "1" or not configured(cfg):
             with self.lock:
                 self.queue.clear()
-            try:
-                for udid in [None] if timer else queued:
-                    run_capture(job, ["refresh.sh"] + (["--device", udid] if udid else []), RUN_TIMEOUT)
-            finally:
-                job.ended = time.time()
-                if job.lines:
-                    log("watcher:", job.lines[-1])
-                self.schedule()
-                self.health.scan()
+            self.schedule()
+            return
+        job = self.jobs.claim_auto()
+        if not job:
+            return
+        with self.lock:
+            self.queue.clear()
+        try:
+            for udid in [None] if timer else queued:
+                run_capture(job, ["refresh.sh"] + (["--device", udid] if udid else []), RUN_TIMEOUT)
+        finally:
+            job.ended = time.time()
+            if job.lines:
+                log("watcher:", job.lines[-1])
+            self.schedule()
+            self.health.scan()

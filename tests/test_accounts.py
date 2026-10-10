@@ -5,10 +5,12 @@ import os
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from sideloop import accounts, config, jobs, store
+from sideloop import accounts, config, jobs, store, watcher
 from sideloop.server import App
 from sideloop.watcher import Watcher, configured
 
@@ -153,6 +155,35 @@ class AccountTests(unittest.TestCase):
         result = subprocess.run(["python3", "-m", "sideloop.accounts", "state", APP, DEVICE],
                                 env=env, capture_output=True, text=True, check=True)
         self.assertEqual(result.stdout.strip(), str(accounts.state_folder(APP, DEVICE)))
+
+    def test_partial_or_damaged_assignment_files_do_not_break_state(self):
+        # A file written by an earlier build held only device defaults; state
+        # reads and the automatic re-sign loop must keep working on it.
+        path = self.root / "signing-accounts.json"
+        for content in (json.dumps({"devices": {DEVICE: "default"}}), json.dumps({"apps": None, "devices": 7}),
+                        "[]", "{not json", json.dumps({"devices": {DEVICE: ["bad"]}, "apps": {APP: "bad"}})):
+            with self.subTest(content=content):
+                path.write_text(content)
+                self.assertEqual(accounts.resolve(APP, DEVICE), "default")
+                self.assertEqual(accounts.app_override(APP, DEVICE), "")
+                self.assertEqual(accounts.device_account(DEVICE), "default")
+                self.assertTrue(store.app_view(APP)["targets"])
+                self.assertFalse(watcher.Watcher(None, None).due() is None)
+        path.write_text(json.dumps({"devices": {DEVICE: "default"}}))
+        accounts.assign(DEVICE, self.second, APP)
+        self.assertEqual(accounts.resolve(APP, DEVICE), self.second)
+        self.assertEqual(json.loads(path.read_text()), {"devices": {DEVICE: "default"}, "apps": {APP: {DEVICE: self.second}}})
+
+    def test_watcher_loop_survives_a_failing_tick(self):
+        w = watcher.Watcher(None, None)
+        with patch.object(watcher.Watcher, "tick", side_effect=KeyError("apps")), \
+             patch.object(watcher.time, "sleep", side_effect=[None, None, StopIteration]), \
+             patch.object(watcher, "log") as logged:
+            with self.assertRaises(StopIteration):
+                w.loop()
+        self.assertEqual(logged.call_count, 2)
+        self.assertIn("KeyError", logged.call_args[0][0])
+        self.assertGreater(w.next_run, time.time())
 
     def test_refresh_script_signs_and_renews_with_isolated_accounts(self):
         fakebin = self.root / "bin"
