@@ -100,6 +100,7 @@ button.cell:active:not(:disabled){background:var(--fill-3)}
 
 .cell input.fi,.cell select.fi{flex:1.4;min-width:0;border:0;background:none;text-align:right;color:var(--label-2);padding:0;outline:none;font-size:17px}
 .cell input.fi:focus{color:var(--label)}
+.cell input.fi:disabled,.cell select.fi:disabled{opacity:.4}
 .cell input.fi::placeholder{color:var(--label-3)}
 .cell select.fi{appearance:none;-webkit-appearance:none;cursor:pointer;text-align-last:right}
 .cell select.fi{color:var(--label)}
@@ -285,10 +286,32 @@ async function pullJob() {
 
 const TITLES = {apps:"Apps", settings:"Settings", activity:"Activity"};
 const TABS = [["apps", "Apps", "apps"], ["settings", "Settings", "settings"], ["activity", "Activity", "list"]];
+// Update the page in place so inputs keep their element, caret, focus and
+// typed text across polls, and password managers don't see fresh fields.
+function morph(from, to) {
+  for (const {name} of [...from.attributes]) if (!to.hasAttribute(name)) from.removeAttribute(name);
+  for (const {name, value} of [...to.attributes]) if (from.getAttribute(name) !== value) from.setAttribute(name, value);
+  if (from.tagName === "INPUT") { if (from.type === "checkbox") from.checked = to.hasAttribute("checked"); return; }
+  if (from.hasAttribute("data-live")) return;
+  const want = [...to.childNodes];
+  for (let i = 0; i < want.length; i++) {
+    const t = want[i]; let cur = from.childNodes[i];
+    const same = n => n && n.nodeType === t.nodeType && (t.nodeType !== 1 || (n.tagName === t.tagName && (n.id || "") === (t.id || "")));
+    if (!same(cur)) {
+      let found = null;
+      if (t.nodeType === 1 && t.id) for (let n = cur; n; n = n.nextSibling) if (same(n)) { found = n; break; }
+      if (found) from.insertBefore(found, cur || null);
+      else from.insertBefore(t.nodeType === 1 ? t.cloneNode(true) : document.createTextNode(t.nodeValue), cur || null);
+      cur = from.childNodes[i];
+      if (!found) continue;
+    }
+    if (t.nodeType === 1) morph(cur, t);
+    else if (cur.nodeValue !== t.nodeValue) cur.nodeValue = t.nodeValue;
+  }
+  while (from.childNodes.length > want.length) from.lastChild.remove();
+  if (from.tagName === "SELECT" && from.value !== to.value) from.value = to.value;
+}
 function render() {
-  const keep = document.activeElement && document.activeElement.id;
-  const vals = {}; root.querySelectorAll("input[id]").forEach(i => { if (i.type !== "checkbox" && i.type !== "file") vals[i.id] = i.value; });
-  const logScroll = $("#logs") ? $("#logs").scrollTop : null;
   const html = `
   <div class="navbar${scrollY > 30 ? " scrolled" : ""}" id="navbar"><span class="t">${TITLES[view]}</span>
     <div class="r"><button class="navbtn" id="signout">Sign Out</button></div></div>
@@ -299,12 +322,10 @@ function render() {
   renderSheet();
   if (html === lastPage) return;
   lastPage = html;
-  root.innerHTML = html;
+  const next = document.createElement("div"); next.id = root.id; next.innerHTML = html;
+  morph(root, next);
   $("#signout").onclick = async () => { await api("/api/auth/logout", {json:{}}); boot(); };
-  Object.entries(vals).forEach(([id, v]) => { const i = document.getElementById(id); if (i) i.value = v; });
-  if (keep) { const el = document.getElementById(keep); if (el) el.focus(); }
   wire();
-  if (logScroll !== null && $("#logs")) $("#logs").scrollTop = logScroll;
 }
 function go(v) { view = v; history.replaceState(null, "", "#" + v); scrollTo(0, 0); render(); if (v === "activity") loadLogs(); }
 addEventListener("scroll", () => { const n = $("#navbar"); if (n) n.classList.toggle("scrolled", scrollY > 30); }, {passive:true});
@@ -422,7 +443,7 @@ function renderSheet() {
         ${i < at ? ic("checkmark-circle", 22) : i === at ? spinner(20) : `<span class="dot"></span>`}<span class="k">${l}</span></div>`).join("")}</div></div>`;
   }
   else if (j.running) { mode = "spin"; main = `<div class="state"><span style="color:var(--label-2)">${spinner(30)}</span><div class="msg">${esc(last)}</div></div>`; }
-  else if (j.rc === 0) { mode = "ok"; main = `<div class="state"><div class="glyph ok">${ic("checkmark", 32)}</div><div class="ttl">${j.saved_account ? "Account Added" : j.kind === "verify" ? "Account Verified" : "Done"}</div>${j.kind === "verify" ? `<div class="msg">${j.saved_account ? "Apple accepted your sign-in and the account was saved." : "Apple accepted your sign-in. No apps were installed."}</div>` : j.kind === "refresh" && j.app ? `<div class="msg">${who} is signed and installed.</div>` : ""}</div>`; }
+  else if (j.rc === 0) { mode = "ok"; main = `<div class="state"><div class="glyph ok">${ic("checkmark", 32)}</div><div class="ttl">${j.saved_account ? "Account Saved" : j.kind === "verify" ? "Account Verified" : "Done"}</div>${j.kind === "verify" ? `<div class="msg">${j.saved_account ? "Apple accepted your sign-in and the account was saved." : "Apple accepted your sign-in. No apps were installed."}</div>` : j.kind === "refresh" && j.app ? `<div class="msg">${who} is signed and installed.</div>` : ""}</div>`; }
   else { mode = "fail"; main = `<div class="state"><div class="glyph bad">${ic("close", 32)}</div><div class="ttl">Didn't Work</div><div class="msg">${esc(last)}</div></div>`; }
 
   const box = $("#sh-main");
@@ -462,6 +483,9 @@ sheetHost.addEventListener("submit", e => {
   act(() => api("/api/job/input", {json:{text:v}}));
 });
 
+// Apple ID fields belong to Apple, not this site: ask browsers and password
+// managers (1Password, LastPass, Bitwarden, Dashlane) not to fill or save them.
+const NOFILL = 'data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other"';
 const accountName = id => { const a = (S.accounts || []).find(a => a.id === id); return a && a.email ? a.email : "Default account"; };
 const accountOptions = current => (S.accounts || []).map(a =>
   `<option value="${esc(a.id)}" ${a.id === current ? "selected" : ""} ${!a.email || !a.has_password ? "disabled" : ""}>${esc(accountName(a.id))}${!a.email || !a.has_password ? " (not configured)" : ""}</option>`).join("");
@@ -515,8 +539,8 @@ function settingsView() {
     <div class="shead"><h3>Apple Accounts</h3></div>
     <form id="aidf" autocomplete="off"><div class="list">
       <div class="cell"><label for="accountedit">Account</label><select class="fi" id="accountedit" ${busy ? "disabled" : ""}>${(S.accounts || []).map(a => `<option value="${esc(a.id)}" ${editingAccount === a.id ? "selected" : ""}>${esc(accountName(a.id))}${a.id === "default" ? " (default)" : ""}</option>`).join("")}<option value="new" ${editingAccount === "new" ? "selected" : ""}>Add another account…</option></select></div>
-      <div class="cell"><label for="aid">Email</label><input class="fi" id="aid" type="email" value="${esc(editing ? editing.email : "")}" placeholder="name@example.com" required ${busy ? "disabled" : ""}></div>
-      <div class="cell"><label for="apw">Password</label><input class="fi" id="apw" type="password" placeholder="${editing && editing.has_password ? "Saved" : "Required"}" autocomplete="new-password" ${busy ? "disabled" : ""}></div>
+      <div class="cell"><label for="aid">Email</label><input class="fi" id="aid" type="email" value="${esc(editing ? editing.email : "")}" placeholder="name@example.com" required autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" inputmode="email" ${NOFILL} ${busy ? "disabled" : ""}></div>
+      <div class="cell"><label for="apw">Password</label><input class="fi" id="apw" type="password" placeholder="${editing && editing.has_password ? "Saved" : "Required"}" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" ${NOFILL} ${busy ? "disabled" : ""}></div>
       <div class="cell"><span class="k">Sign-in status</span><span>${esc(({verified:"Last sign-in verified",failed:"Sign-in failed",checking:"Checking sign-in…",unverified:"Not verified"})[(editing && editing.verification || {}).status] || "Not verified")}</span></div>
       <button class="cell action" ${busy ? "disabled" : ""}>Sign In and Save Account</button>
       ${editing && editing.has_password ? `<button type="button" class="cell action" id="verifyaccount" ${busy ? "disabled" : ""}>Verify Saved Account</button>` : ""}
@@ -546,7 +570,7 @@ function ipaWarnings(i) {
 function activityView() {
   return `<div class="sect">
     <div class="shead"><h3>History</h3><button class="linkbtn" id="reload">${ic("refresh", 15)}Reload</button></div>
-    <div class="list"><pre class="logs" id="logs">Loading…</pre></div></div>`;
+    <div class="list"><pre class="logs" id="logs" data-live>Loading…</pre></div></div>`;
 }
 async function loadLogs() {
   const r = await api("/api/logs");

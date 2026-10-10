@@ -167,7 +167,10 @@ class AccountTests(unittest.TestCase):
                         "-out", str(self.root / "cert.pem")], capture_output=True, check=True)
         env = {**os.environ, "DATA_DIR": str(self.root), "PATH": f"{fakebin}:{os.environ['PATH']}",
                "ALTSERVER_BIN": str(fakebin / "AltServer"), "TEST_DEVICE": DEVICE}
-        script = Path("/usr/local/bin/refresh.sh")
+        # The checkout's script when run from the repository; the installed copy inside the container.
+        script = Path(__file__).resolve().parents[1] / "scripts" / "refresh.sh"
+        if not script.is_file():
+            script = Path("/usr/local/bin/refresh.sh")
         def run(*args):
             r = subprocess.run(["bash", str(script), "--app", APP, "--device", DEVICE, *args],
                                env=env, capture_output=True, text=True, timeout=30)
