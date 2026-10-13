@@ -46,6 +46,11 @@ with tempfile.TemporaryDirectory() as folder:
                     '-subj', '/CN=gsa.apple.com', '-addext', 'subjectAltName=DNS:gsa.apple.com',
                     '-keyout', str(root/'key'), '-out', str(root/'cert')],
                    check=True, capture_output=True)
+    # The statically linked signer uses its compiled-in system trust store,
+    # rather than SSL_CERT_FILE. This runs only in a disposable test container.
+    test_ca = Path('/usr/local/share/ca-certificates/sideloop-native-test.crt')
+    test_ca.write_bytes((root/'cert').read_bytes())
+    subprocess.run(['update-ca-certificates'], check=True, capture_output=True)
     anisette = http.server.ThreadingHTTPServer(('127.0.0.1', 6969), Anisette)
     apple = http.server.ThreadingHTTPServer(('127.0.0.1', 443), Apple)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -53,7 +58,7 @@ with tempfile.TemporaryDirectory() as folder:
     apple.socket = context.wrap_socket(apple.socket, server_side=True)
     for server in (anisette, apple): threading.Thread(target=server.serve_forever, daemon=True).start()
     result = subprocess.run(['AltServer', '--verify-account'], cwd=root,
-                            env={**os.environ, 'TZ': 'UTC', 'SSL_CERT_FILE': str(root/'cert'),
+                            env={**os.environ, 'TZ': 'UTC',
                                  'ALTSERVER_APPLE_ID': 'synthetic@example.test',
                                  'ALTSERVER_APPLE_PASSWORD': 'synthetic-password',
                                  'ALTSERVER_ANISETTE_SERVER': 'http://127.0.0.1:6969'},
