@@ -11,7 +11,7 @@ docker build --platform linux/amd64 --build-arg BUILD_JOBS=4 \
   --label "org.opencontainers.image.revision=$revision" \
   --label org.opencontainers.image.source=https://github.com/shoyrock/sideloop \
   -t "$image" . 2>&1 | tee output/build.log
-printf 'FROM %s\nCOPY tests/ /tests/\n' "$image" > output/Dockerfile.tests
+printf 'FROM %s\nCOPY tests/ /tests/\nCOPY tools/diagnose-auth.py /tools/diagnose-auth.py\n' "$image" > output/Dockerfile.tests
 docker build -f output/Dockerfile.tests -t "$tests" .
 docker run --rm --network none --entrypoint python3 "$tests" \
   -m unittest discover -s /tests -p 'test_*.py' -v 2>&1 | tee output/tests.log
