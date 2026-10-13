@@ -101,7 +101,7 @@ def main():
     created = False
     try:
         docker(
-            "run", "-d", "--name", NAME, "--privileged", "--stop-timeout", "45",
+            "run", "-d", "--name", NAME, "--stop-timeout", "45",
             *([] if IN_CONTAINER else ["-p", "127.0.0.1:18080:8080"]),
             "--mount", f"type=volume,source={VOLUME},target=/data", IMAGE,
         )
@@ -202,7 +202,7 @@ def main():
         docker("rm", NAME)
         created = False
         docker(
-            "run", "-d", "--name", NAME, "--privileged", "--stop-timeout", "45",
+            "run", "-d", "--name", NAME, "--stop-timeout", "45",
             *([] if IN_CONTAINER else ["-p", "127.0.0.1:18080:8080"]),
             "--mount", f"type=volume,source={VOLUME},target=/data", IMAGE,
         )
