@@ -12,6 +12,7 @@ from .config import ANISETTE, LOCKDOWN_DIR, USB_MUX
 from .log import log
 
 SCAN_INTERVAL = 60
+RETRY_INTERVAL = 10
 
 
 class Muxers:
@@ -119,6 +120,9 @@ class Health:
             devices = _probe() if muxer else []
             known = {u.lower(): u for u in store.device_ids()}
             here = {known[d["udid"].lower()] for d in devices if d["reachable"] and d["udid"].lower() in known}
+            for d in devices:
+                if d["reachable"] and d["udid"].lower() in known:
+                    store.set_device_ios(known[d["udid"].lower()], d["ios"])
             with self.lock:
                 arrived = here - self.here
                 self.devices, self.here, self.anisette, self.muxer = devices, here, anisette, muxer
@@ -134,7 +138,9 @@ class Health:
     def loop(self):
         while True:
             self.scan()
-            time.sleep(SCAN_INTERVAL)
+            # Anisette downloads Apple's libraries on first start; recheck soon so the
+            # UI doesn't report the helper as down for a full interval afterwards.
+            time.sleep(SCAN_INTERVAL if self.anisette and self.muxer else RETRY_INTERVAL)
 
     def visible(self, udid):
         with self.lock:

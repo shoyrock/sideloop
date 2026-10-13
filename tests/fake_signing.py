@@ -18,15 +18,43 @@ command, *args = sys.argv[1:]
 if command == "idevice_id":
     print(os.environ["TEST_DEVICE"])
 elif command == "ideviceinfo":
-    print("Test iPhone")
+    print(os.environ.get("TEST_IOS", "26.0") if "ProductVersion" in args else "Test iPhone")
 elif command == "ideviceprovision":
     if "copy" in args:
         for p in profiles.glob("*.mobileprovision"):
             shutil.copy(p, Path(args[-1]) / p.name)
     elif "remove" in args:
         (profiles / (args[-1] + ".mobileprovision")).unlink(missing_ok=True)
+elif command == "AltServer" and os.environ.get("TEST_IOS_REJECT"):
+    # What AltServer prints when iOS answers DeviceOSVersionTooLow; it still exits 0.
+    print("Alert: Could not install app.ipa to unknown.\n"
+          "    Your device must be running iOS 12.2 or later to install AltStore.\n"
+          "Error: com.rileytestut.AltServer (10).\nFinished!")
+elif command == "AltServer" and os.environ.get("TEST_REFUSE"):
+    # Apple refusing the sign-in itself, before anything is signed.
+    with (root / "refused-attempts").open("a") as f:
+        f.write(os.environ["ALTSERVER_APPLE_ID"] + "\n")
+    if os.environ["TEST_REFUSE"] == "mfa":
+        print("Enter two factor code\nError: authentication cancelled without a verification code")
+    else:
+        print("Error: This action cannot be completed at this time. (-80045)")
+    sys.exit(1)
+elif command == "AltServer" and os.environ.get("TEST_APP_LIMIT"):
+    # AltServer's output when iOS refuses a 4th app signed with a free developer profile.
+    with (root / "limit-attempts").open("a") as f:
+        f.write("1\n")
+    print('Alert: Could not install app.ipa to unknown.\n'
+          '    This device has reached the maximum number of installed apps using a free developer profile: {(\n'
+          '    "FAF69A2244.com.recsynq.recsynq",\n    "FAF69A2244.com.lavaamp.player",\n'
+          '    "PWFY567U42.test.app.PWFY567U42"\n)}\n\n'
+          "Please deactivate a sideloaded app with AltStore in order to install another app. If you're running "
+          "iOS 13.5 or later, make sure 'Offload Unused Apps' is disabled in Settings > iTunes & App Stores.\n"
+          "Error: com.rileytestut.AltServer (9).\nFinished!")
 elif command == "AltServer":
-    email = args[args.index("-a") + 1]
+    # Credentials arrive in the environment; arguments are visible in the process list.
+    assert "-a" not in args and "-p" not in args, args
+    email = os.environ["ALTSERVER_APPLE_ID"]
+    assert os.environ["ALTSERVER_APPLE_PASSWORD"]
     cache = Path.cwd() / "AltServerData"
     cache.mkdir(exist_ok=True)
     identity = cache / "account.txt"
@@ -34,7 +62,7 @@ elif command == "AltServer":
         raise RuntimeError("signing cache crossed accounts")
     identity.write_text(email)
     with (root / "signing-records.jsonl").open("a") as f:
-        f.write(json.dumps({"email": email, "cwd": str(Path.cwd()), "home": os.environ["HOME"]}) + "\n")
+        f.write(json.dumps({"email": email, "cwd": str(Path.cwd()), "home": os.environ["HOME"], "ipa": args[-1]}) + "\n")
     app = Path(args[-1]).parent.name
     team = hashlib.sha256(email.encode()).hexdigest()[:10].upper()
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)

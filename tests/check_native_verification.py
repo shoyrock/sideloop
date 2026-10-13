@@ -15,6 +15,7 @@ import threading
 from pathlib import Path
 
 operations = []
+client_identities = []
 class Anisette(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def do_GET(self):
@@ -33,6 +34,7 @@ class Apple(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         request = plistlib.loads(self.rfile.read(int(self.headers['Content-Length'])))
         operations.append(request['Request']['o'])
+        client_identities.append(self.headers.get('X-Mme-Client-Info', ''))
         response = plistlib.dumps({'Response': {'Status': {'ec': -22411, 'em': 'Synthetic rejection'}}})
         self.send_response(200); self.send_header('Content-Type','text/x-xml-plist')
         self.send_header('Content-Length', str(len(response))); self.end_headers()
@@ -41,7 +43,8 @@ class Apple(http.server.BaseHTTPRequestHandler):
 with tempfile.TemporaryDirectory() as folder:
     root = Path(folder)
     subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
-                    '-subj', '/CN=gsa.apple.com', '-keyout', str(root/'key'), '-out', str(root/'cert')],
+                    '-subj', '/CN=gsa.apple.com', '-addext', 'subjectAltName=DNS:gsa.apple.com',
+                    '-keyout', str(root/'key'), '-out', str(root/'cert')],
                    check=True, capture_output=True)
     anisette = http.server.ThreadingHTTPServer(('127.0.0.1', 6969), Anisette)
     apple = http.server.ThreadingHTTPServer(('127.0.0.1', 443), Apple)
@@ -50,7 +53,8 @@ with tempfile.TemporaryDirectory() as folder:
     apple.socket = context.wrap_socket(apple.socket, server_side=True)
     for server in (anisette, apple): threading.Thread(target=server.serve_forever, daemon=True).start()
     result = subprocess.run(['AltServer', '--verify-account'], cwd=root,
-                            env={**os.environ, 'TZ': 'UTC', 'ALTSERVER_APPLE_ID': 'synthetic@example.test',
+                            env={**os.environ, 'TZ': 'UTC', 'SSL_CERT_FILE': str(root/'cert'),
+                                 'ALTSERVER_APPLE_ID': 'synthetic@example.test',
                                  'ALTSERVER_APPLE_PASSWORD': 'synthetic-password',
                                  'ALTSERVER_ANISETTE_SERVER': 'http://127.0.0.1:6969'},
                             capture_output=True, text=True, timeout=15)
@@ -58,6 +62,7 @@ with tempfile.TemporaryDirectory() as folder:
     assert 'Authentication failed:' in result.stderr and '-22411' in result.stderr, (result.stdout, result.stderr, operations)
     assert 'Account authentication succeeded.' not in result.stdout
     assert operations == ['init'], operations
+    assert all('<Android;' in identity and 'com.apple.akd' in identity for identity in client_identities), client_identities
     assert not (root/'AltServerData').exists()
-    print('PASS: compiled auth-only entrypoint reaches Apple authentication, rejects failure, and creates no signing data')
+    print('PASS: compiled auth-only entrypoint uses Android client identity over verified TLS, rejects failure, and creates no signing data')
     for server in (anisette, apple): server.shutdown()

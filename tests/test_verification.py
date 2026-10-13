@@ -42,6 +42,9 @@ if mode in ('mfa','wrong','cancel'):
 if mode == 'error':
     print('Authentication failed: This action cannot be completed at this time (-22411).')
     sys.exit(1)
+if mode == 'signer':
+    print('Authentication failed: This action cannot be completed at this time. (-80045).')
+    sys.exit(1)
 if mode == 'echo':
     print('Authentication failed: ' + os.environ['ALTSERVER_APPLE_PASSWORD'])
     sys.exit(1)
@@ -118,6 +121,23 @@ if mode != 'silent':
             job, _ = self.launch(mode)
             self.assertNotEqual(job.rc, 0)
             self.assertEqual(accounts.verification('default')['status'], 'failed')
+
+    def test_apple_rejection_explains_trusted_device_requirement(self):
+        job, _ = self.launch('error')
+        view = job.view(0)
+        self.assertEqual(view['last'], verification.REJECTED_HINT)
+        self.assertIn('-22411', view['lines'][-2])
+        silent, _ = self.launch('silent')
+        self.assertNotIn(verification.REJECTED_HINT, silent.lines)
+        # Saving shows the same guidance as the final summary line.
+        saving = self.save_attempt('error')
+        self.assertEqual(saving.view()['last'], verification.REJECTED_HINT + ' Account changes were not saved.')
+
+    def test_signing_service_refusal_is_not_blamed_on_the_apple_id(self):
+        job, _ = self.launch('signer')
+        self.assertEqual(job.view(0)['last'], verification.SIGNER_HINT)
+        self.assertIn('-80045', job.view(0)['lines'][-2])
+        self.assertEqual(accounts.verification('default')['status'], 'failed')
 
     def test_cancelled_verification_does_not_mark_verified(self):
         job, worker = self.launch('cancel')

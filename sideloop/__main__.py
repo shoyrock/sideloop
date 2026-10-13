@@ -21,7 +21,7 @@ def main():
         muxers.start()
     threading.Thread(target=health.loop, daemon=True).start()
     threading.Thread(target=watcher.loop, daemon=True).start()
-    Server(("0.0.0.0", PORT), handler(App(jobs, health, muxers))).serve_forever()
+    Server(("0.0.0.0", PORT), handler(App(jobs, health, muxers, watcher))).serve_forever()
 
 
 if __name__ == "__main__":
