@@ -52,7 +52,10 @@ def main():
     except Exception as error:
         report['anisette_error_type'] = type(error).__name__
     try:
-        with urllib.request.urlopen('https://gsa.apple.com/', timeout=15) as response:
+        # gsa.apple.com chains to Apple's private CA, which the system store doesn't trust;
+        # any public Apple host serves the same clock in its Date header.
+        request = urllib.request.Request('https://www.apple.com/', method='HEAD')
+        with urllib.request.urlopen(request, timeout=15) as response:
             apple_date = response.headers.get('Date')
         if apple_date:
             report['apple_clock_difference_seconds'] = round((dt.datetime.now(dt.timezone.utc) - email.utils.parsedate_to_datetime(apple_date)).total_seconds())

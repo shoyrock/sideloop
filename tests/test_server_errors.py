@@ -42,7 +42,8 @@ class HandlerErrorTests(unittest.TestCase):
              patch("sys.stdout", new_callable=io.StringIO) as out:
             status, body = self.request("GET", "/api/auth")
         self.assertEqual(status, 500)
-        self.assertEqual(body, {"error": "PermissionError: [Errno 13] Permission denied: '/data/ui.json'"})
+        # Unauthenticated clients get no internals; the log has the full traceback.
+        self.assertEqual(body, {"error": "something went wrong: see the container log"})
         self.assertIn("GET /api/auth failed:", out.getvalue())
         self.assertIn("PermissionError", out.getvalue())
 
@@ -51,7 +52,12 @@ class HandlerErrorTests(unittest.TestCase):
              patch("sys.stdout", new_callable=io.StringIO):
             status, body = self.request("POST", "/api/auth/setup", {"password": "password123"})
         self.assertEqual(status, 500)
-        self.assertEqual(body, {"error": "RuntimeError: boom"})
+        self.assertEqual(body, {"error": "something went wrong: see the container log"})
+
+    def test_signed_in_admin_sees_what_failed(self):
+        with patch("sideloop.server.auth.valid_session", return_value=True),              patch("sideloop.server.auth.has_password", side_effect=RuntimeError("boom")),              patch("sys.stdout", new_callable=io.StringIO):
+            status, body = self.request("GET", "/api/auth")
+        self.assertEqual((status, body), (500, {"error": "something went wrong: RuntimeError: boom"}))
 
     def test_healthy_requests_unaffected(self):
         with patch("sideloop.server.auth.has_password", return_value=False):

@@ -6,8 +6,8 @@ import time
 from . import accounts, ipa
 from .config import APPS, DEVICES, read_env, write_env
 
-APP_KEYS = ["BUNDLE_ID", "APP_NAME", "APP_VERSION", "IPA_SOURCE", "ADDED", "DEVICES"]
-DEVICE_KEYS = ["DEVICE_NAME", "ADDED"]
+APP_KEYS = ["BUNDLE_ID", "APP_NAME", "APP_VERSION", "IPA_SOURCE", "ADDED", "DEVICES", "KEEP_EXTENSIONS"]
+DEVICE_KEYS = ["DEVICE_NAME", "ADDED", "IOS", "MANUAL_APPS"]
 UDID_RE = re.compile(r"^[0-9A-Fa-f-]{20,64}$")
 
 
@@ -36,17 +36,37 @@ def device_name(udid):
     return read_env(DEVICES / f"{udid}.env", DEVICE_KEYS)["DEVICE_NAME"] or udid
 
 
+def device_ios(udid):
+    return read_env(DEVICES / f"{udid}.env", DEVICE_KEYS)["IOS"]
+
+
+def set_device_ios(udid, ios):
+    # Remembered so incompatible apps are flagged while the device is away.
+    path = DEVICES / f"{udid}.env"
+    old = read_env(path, DEVICE_KEYS)
+    if path.exists() and ios and ios != "-" and old["IOS"] != ios:
+        write_env(path, {**old, "IOS": ios})
+
+
 def add_device(udid, name):
     if not UDID_RE.match(udid):
         raise ValueError("that doesn't look like a device ID")
-    new = udid not in device_ids()
     old = read_env(DEVICES / f"{udid}.env", DEVICE_KEYS)
-    write_env(DEVICES / f"{udid}.env", {"DEVICE_NAME": name or udid, "ADDED": old["ADDED"] or int(time.time())})
-    if new:
-        for app_id in app_ids():
-            devs = app_devices(app_id)
-            if udid not in devs:
-                set_app_devices(app_id, devs + [udid])
+    # A new device starts without apps; the user chooses which go on it.
+    write_env(DEVICES / f"{udid}.env", {**old, "DEVICE_NAME": name or udid, "ADDED": old["ADDED"] or int(time.time())})
+
+
+def auto_resign(app_id, udid):
+    return app_id not in read_env(DEVICES / f"{udid}.env", DEVICE_KEYS)["MANUAL_APPS"].split()
+
+
+def set_auto_resign(app_id, udid, on):
+    path = DEVICES / f"{udid}.env"
+    if not path.exists():
+        raise ValueError("no such device")
+    old = read_env(path, DEVICE_KEYS)
+    manual = [a for a in old["MANUAL_APPS"].split() if a != app_id] + ([] if on else [app_id])
+    write_env(path, {**old, "MANUAL_APPS": " ".join(manual)})
 
 
 def remove_device(udid):
@@ -54,7 +74,7 @@ def remove_device(udid):
     for app_id in app_ids():
         set_app_devices(app_id, [u for u in app_meta(app_id)["DEVICES"].split() if u.lower() != udid.lower()])
         shutil.rmtree(APPS / app_id / "state" / udid, ignore_errors=True)
-    accounts.forget(udid=udid)
+    accounts.forget(udid)
 
 
 def app_ids():
@@ -76,27 +96,34 @@ def set_app_devices(app_id, udids):
     meta = app_meta(app_id)
     meta["DEVICES"] = " ".join(udids)
     write_env(APPS / app_id / "meta.env", meta)
-    for udid in udids:
-        accounts.pin(app_id, udid)
 
 
 def app_view(app_id):
     d, meta = APPS / app_id, app_meta(app_id)
+    info = ipa.cached(d)
+    keep = meta["KEEP_EXTENSIONS"] == "1"
+    min_ios = ipa.required_ios(info, keep)
     return {
         "id": app_id,
         "bundle_id": meta["BUNDLE_ID"],
         "name": meta["APP_NAME"] or app_id,
         "version": meta["APP_VERSION"],
-        "info": ipa.cached(d),
+        "info": info,
+        "keep_extensions": keep,
+        "min_ios": min_ios,
         "targets": [{"udid": u, "name": device_name(u), "account": accounts.resolve(app_id, u),
-                     "account_override": accounts.app_override(app_id, u),
-                     "signature": read_state(accounts.state_folder(app_id, u))}
+                     "signature": read_state(accounts.state_folder(app_id, u)),
+                     "auto": auto_resign(app_id, u),
+                     "needs_ios": min_ios if ipa.requires_newer(min_ios, device_ios(u)) else ""}
                     for u in app_devices(app_id, meta)],
     }
 
 
 def add_app(src, info, filename):
     app_id = re.sub(r"[^A-Za-z0-9._-]", "_", info["bundle_id"])[:120] or "app"
+    # The id is a folder name under APPS; "." or ".." would escape it.
+    if app_id.startswith(".") or ".." in app_id:
+        raise ValueError("the app's bundle identifier isn't valid")
     d = APPS / app_id
     (d / "state").mkdir(parents=True, exist_ok=True)
     os.replace(src, d / "app.ipa")
@@ -108,13 +135,23 @@ def add_app(src, info, filename):
         "IPA_SOURCE": filename[:200],
         "ADDED": old["ADDED"] or int(time.time()),
         "DEVICES": old["DEVICES"] if old["ADDED"] else " ".join(device_ids()),
+        "KEEP_EXTENSIONS": old["KEEP_EXTENSIONS"],
     })
     (d / "info.json").unlink(missing_ok=True)
-    for udid in app_devices(app_id):
-        accounts.pin(app_id, udid)
+    (d / "app-noext.ipa").unlink(missing_ok=True)
     return app_id
+
+
+def set_keep_extensions(app_id, keep):
+    meta = app_meta(app_id)
+    meta["KEEP_EXTENSIONS"] = "1" if keep else ""
+    write_env(APPS / app_id / "meta.env", meta)
+    if keep:
+        (APPS / app_id / "app-noext.ipa").unlink(missing_ok=True)
 
 
 def remove_app(app_id):
     shutil.rmtree(APPS / app_id)
-    accounts.forget(app_id=app_id)
+    for udid in device_ids():
+        if not auto_resign(app_id, udid):
+            set_auto_resign(app_id, udid, True)

@@ -8,9 +8,16 @@ from .jobs import run_pty
 
 SUCCESS = 'Account authentication succeeded.'
 AUTH_TIMEOUT = 300
+REJECTED_HINT = ('Apple refused this Apple ID sign-in (-22411). Complete any verification Apple requests '
+                 'and try again. This error can also indicate a signing-service compatibility problem; '
+                 'it does not by itself mean the account has never been used on an Apple device.')
+# Apple returns -80045 when the client identity doesn't match the platform that made the
+# Anisette data. Nothing about the Apple ID causes it; the signing service has to change.
+SIGNER_HINT = ('Apple refused the sign-in from this signing service (-80045), not the Apple ID. '
+               'Update Sideloop to the latest image, then try again.')
 
 
-def _authenticate(job, candidate, work):
+def _authenticate(job, candidate, work, unsaved=False):
     home = work / '.altserver'
     home.mkdir(parents=True, exist_ok=True)
     # Unsaved passwords are not yet returned by accounts.passwords().
@@ -25,12 +32,19 @@ def _authenticate(job, candidate, work):
     confirmed = job.rc == 0 and not job.cancelled and SUCCESS in job.lines
     if not confirmed:
         job.rc = job.rc or 1
+        # The last line is the sheet's summary, so it carries the save outcome too.
+        note = ' Account changes were not saved.' if unsaved else ''
         if job.cancelled:
-            job.say('Account verification cancelled.')
+            job.say('Account verification cancelled.' + note)
         elif job.rc == 124:
-            job.say('Account verification timed out. Try again when you can complete Apple verification.')
+            job.say('Account verification timed out. Try again when you can complete Apple verification.' + note)
+        elif any('-22411' in line for line in job.lines):
+            job.say(REJECTED_HINT + note)
+        elif any('-80045' in line for line in job.lines):
+            job.say(SIGNER_HINT + note)
         else:
-            job.say('Apple sign-in was not verified. See Details for the authentication error.')
+            job.say('Apple sign-in was not verified; account changes were not saved.' if unsaved else
+                    'Apple sign-in was not verified. See Details for the authentication error.')
     return confirmed
 
 
@@ -50,8 +64,7 @@ def verify(job, account_id):
 def verify_and_save(job, account_id, candidate):
     # Pending credentials stay in memory and out of existing signing caches.
     with tempfile.TemporaryDirectory(prefix='sideloop-auth-') as work:
-        if not _authenticate(job, candidate, Path(work)):
-            job.say('Apple sign-in was not verified; account changes were not saved.')
+        if not _authenticate(job, candidate, Path(work), unsaved=True):
             return
     with job.lock:
         if job.cancelled:

@@ -22,10 +22,18 @@ PROGRESS = re.compile(r"^(Signing|Installation) Progress:\s*([0-9.eE+-]+)")
 NOISE = re.compile(r"^Writing File: ")
 APP_START = re.compile(r"\[(.+?)\] (?:signing and installing|no signature on record|signature has)")
 MAX_LINE = 400
+# AltServer reports every DeviceOSVersionTooLow rejection with AltStore's own requirement.
+# refresh.sh's failure line names the app's actual minimum.
+ALTSTORE_IOS = "Your device must be running iOS 12.2 or later to install AltStore."
+IOS_TOO_OLD = "iOS refused the app: the device's iOS version is older than the app requires."
+# AltServer's advice for iOS's 3-app limit points to AltStore and a pre-iOS 16 Settings path.
+ALTSTORE_LIMIT = "Please deactivate a sideloaded app with AltStore"
+LIMIT_ADVICE = ("Delete one of these apps from the device, then install again. Offloaded apps still count, "
+                "so turn off Offload Unused Apps in Settings > App Store.")
 VERIFY_PUBLIC = re.compile(r'^(?:Enter two factor code$|Requires two factor\.\.\.$|'
                           r'Authentication failed:|Account authentication succeeded\.$|'
                           r'Signing in to Apple to verify|Account verification (?:cancelled|timed out)|'
-                          r'Apple sign-in was not verified)')
+                          r'Apple sign-in was not verified|Apple refused (?:this Apple ID|the sign-in))')
 
 
 def hidden(line):
@@ -34,7 +42,14 @@ def hidden(line):
 
 def redact(lines):
     passwords = accounts.passwords()
-    return [mask(ln, passwords) for ln in lines if not hidden(ln)]
+    return [friendly(mask(ln, passwords)) for ln in lines if not hidden(ln)]
+
+
+def friendly(line):
+    """Replace AltServer messages written for AltStore users."""
+    if line.lstrip().startswith(ALTSTORE_LIMIT):
+        return LIMIT_ADVICE
+    return line.replace(ALTSTORE_IOS, IOS_TOO_OLD)
 
 
 def mask(text, passwords):
@@ -65,7 +80,7 @@ class Job:
             buf = (self.partial + text).replace("\r\n", "\n").replace("\r", "\n")
             *done, self.partial = buf.split("\n")
             for line in done:
-                line = mask(line, self.secrets)
+                line = friendly(mask(line, self.secrets))
                 t = line.strip()
                 if not t:
                     continue
