@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from sideloop import accounts, config, jobs, store, watcher
+from sideloop import accounts, config, ipa, jobs, store, watcher
 from sideloop.server import App
 from sideloop.watcher import Watcher, configured
 
@@ -339,7 +339,7 @@ class AccountTests(unittest.TestCase):
         (state / "expiry").write_text(str(int(time.time() + seconds_left)))
 
     def test_unreachable_device_is_logged_once_per_absence(self):
-        self.install_marker(86400)  # installed and due within the 2-day window
+        self.install_marker(86400 - 600)  # installed and due within the 2-day window
         env = {**self.fake_tools(), "TEST_DEVICE": "ffffffffffffffffffffffffffffffffffffffff"}
         for _ in range(3):
             self.assertEqual(self.refresh(env).returncode, 0)
@@ -523,6 +523,38 @@ class AccountTests(unittest.TestCase):
         self.assertEqual(job.lines, ["    " + jobs.IOS_TOO_OLD])
         self.assertEqual(jobs.redact([jobs.ALTSTORE_IOS]), [jobs.IOS_TOO_OLD])
 
+    def assert_minizip_readable(self, path):
+        """AltSign's minizip requires each local header's sizes to match the central directory."""
+        import struct, zipfile
+        with zipfile.ZipFile(path) as z, open(path, "rb") as f:
+            self.assertTrue(z.infolist())
+            for info in z.infolist():
+                f.seek(info.header_offset)
+                *_, crc, csize, size, _, _ = struct.unpack("<IHHHHHIIIHH", f.read(30))
+                self.assertEqual((crc, csize, size), (info.CRC, info.compress_size, info.file_size), info.filename)
+
+    def test_stripped_copy_keeps_names_and_classic_zip_fields(self):
+        import zipfile
+        name = "Payload/Test.app/Français.lproj/Localizable.strings"
+        with zipfile.ZipFile(self.app_dir / "app.ipa", "w") as z:
+            z.writestr(name.replace("ç", "XX"), b"strings")
+            z.writestr("Payload/Test.app/Big", b"x" * 5000)
+            z.writestr("Payload/Test.app/PlugIns/Share.appex/Info.plist", b"extension")
+        # macOS and most IPA tools store UTF-8 names without zip's UTF-8 flag.
+        raw = (self.app_dir / "app.ipa").read_bytes()
+        (self.app_dir / "app.ipa").write_bytes(raw.replace(name.replace("ç", "XX").encode(), name.encode()))
+        with zipfile.ZipFile(self.app_dir / "app.ipa") as z:
+            self.assertFalse(z.getinfo(name.encode().decode("cp437")).flag_bits & 0x800)
+        # Shrunk stand-ins for zipfile's 2 GiB Zip64 switch and the 4 GiB classic limit.
+        with patch.object(zipfile, "ZIP64_LIMIT", 1000), patch.object(ipa, "CLASSIC_LIMIT", 10 ** 6):
+            copy = ipa.signing_copy(self.app_dir)
+            self.assertEqual(zipfile.ZIP64_LIMIT, 1000)
+        with zipfile.ZipFile(copy) as z:
+            self.assertEqual(sorted(z.namelist()), ["Payload/Test.app/Big", name])
+            self.assertEqual(z.read(name), b"strings")
+            self.assertTrue(all(len(i.extra) == 0 for i in z.infolist()))
+        self.assert_minizip_readable(copy)
+
     def test_extensions_are_removed_unless_kept(self):
         import plistlib, zipfile
         with zipfile.ZipFile(self.app_dir / "app.ipa", "w") as z:
@@ -543,8 +575,15 @@ class AccountTests(unittest.TestCase):
         self.assertEqual(Path(signed).name, "app-noext.ipa")
         with zipfile.ZipFile(signed) as z:
             self.assertEqual(sorted(z.namelist()), ["Payload/Test.app/Info.plist", "Payload/Test.app/Test"])
+        self.assert_minizip_readable(signed)
         with zipfile.ZipFile(self.app_dir / "app.ipa") as z:
             self.assertEqual(len(z.namelist()), 4)
+        # A copy from the first builds (Zip64 local headers, Archive error 0) is made again.
+        with zipfile.ZipFile(signed, "w") as z, z.open("Payload/Test.app/Test", "w", force_zip64=True) as f:
+            f.write(b"binary")
+        os.utime(signed, (time.time() + 60, time.time() + 60))
+        self.assertEqual(ipa.signing_copy(self.app_dir), Path(signed))
+        self.assert_minizip_readable(signed)
         # Keeping them signs the upload itself; the extension's iOS 17.0 then applies.
         App(jobs.Jobs(lambda: None), None, None).set_app_extensions({"app": APP, "keep": True})
         self.assertFalse((self.app_dir / "app-noext.ipa").exists())

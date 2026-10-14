@@ -15,6 +15,12 @@ CACHE_VERSION = 4
 # Extensions, widgets, watch apps and app clips each need their own App ID and take one of the
 # device's 3 free-app slots. Like AltStore and SideStore, Sideloop removes them unless kept.
 EXTRAS = re.compile(r"Payload/[^/]+\.app/(?:PlugIns|Extensions|Watch|AppClips)/")
+# Marks copies AltServer can read. The first ones gave every entry Zip64 local headers whose
+# sizes don't match the central directory; AltSign's minizip refuses those (Archive error 0).
+STRIPPED_FORMAT = b"sideloop-noext-4"
+# AltSign unzips with minizip 1.01e, which predates Zip64: like the upload itself, a copy must
+# keep classic zip fields, which hold sizes and offsets below 4 GiB.
+CLASSIC_LIMIT = 0xFFFFFFFE
 
 
 # Bundle identifiers name the app's storage folder; Apple allows letters, digits, "-" and ".".
@@ -166,17 +172,62 @@ def signing_copy(folder, keep_extensions=False):
     with zipfile.ZipFile(ipa) as z:
         if not any(EXTRAS.match(n) for n in z.namelist()):
             return ipa
-        if stripped.exists() and stripped.stat().st_mtime >= ipa.stat().st_mtime:
+        if stripped.exists() and stripped.stat().st_mtime >= ipa.stat().st_mtime and _readable(stripped):
             return stripped
         tmp = stripped.with_suffix(".tmp")
-        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=1, allowZip64=True) as out:
-            for item in z.infolist():
-                if not EXTRAS.match(item.filename):
-                    with z.open(item) as src, out.open(item, "w", force_zip64=True) as dst:
-                        while chunk := src.read(1 << 20):
-                            dst.write(chunk)
+        # zipfile switches to Zip64 at 2 GiB; classic fields hold sizes and offsets up to 4 GiB.
+        # Raised only while this copy is written, which runs in refresh.sh's own process.
+        limit, zipfile.ZIP64_LIMIT = zipfile.ZIP64_LIMIT, CLASSIC_LIMIT
+        try:
+            with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, allowZip64=False) as out:
+                out.comment = STRIPPED_FORMAT
+                for item in z.infolist():
+                    if not EXTRAS.match(item.filename):
+                        _copy_entry(z, item, out)
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
+        finally:
+            zipfile.ZIP64_LIMIT = limit
     tmp.replace(stripped)
     return stripped
+
+
+def _copy_entry(z, item, out):
+    # Stream into classic headers and let close() write the measured sizes. Supplying the
+    # source size makes zipfile reserve 5% for compression overhead and select Zip64 even
+    # for representable files near 4 GiB. Overflow must fail, never emit an unreadable copy.
+    info = zipfile.ZipInfo(_stored_name(item), item.date_time)
+    info.external_attr, info.create_system = item.external_attr, item.create_system
+    if item.is_dir():
+        out.writestr(info, b"", zipfile.ZIP_STORED)
+        return
+    if item.file_size > CLASSIC_LIMIT:
+        raise zipfile.LargeZipFile("This app contains a file too large for AltServer's classic ZIP reader")
+    info.compress_type = zipfile.ZIP_DEFLATED
+    with z.open(item) as src, out.open(info, "w") as dst:
+        while chunk := src.read(1 << 20):
+            dst.write(chunk)
+
+
+def _stored_name(item):
+    """The name as the upload stored it. zipfile reads names without the UTF-8 flag as cp437,
+    but macOS and most IPA tools write UTF-8 without it; written back, the app's files would
+    get new names."""
+    if item.flag_bits & 0x800 or item.filename.isascii():
+        return item.filename
+    try:
+        return item.filename.encode("cp437").decode("utf-8")
+    except UnicodeError:
+        return item.filename
+
+
+def _readable(path):
+    try:
+        with zipfile.ZipFile(path) as z:
+            return z.comment == STRIPPED_FORMAT
+    except (OSError, zipfile.BadZipFile):
+        return False
 
 
 if __name__ == "__main__":

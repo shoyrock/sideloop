@@ -38,7 +38,7 @@ index 6ae772e..ad1d8ce 100644
  
  std::shared_ptr<AnisetteData> AnisetteDataManager::FetchAnisetteData()
 diff --git a/upstream_repo/AltSign/AppleAPI+Authentication.cpp b/upstream_repo/AltSign/AppleAPI+Authentication.cpp
-index 059a69b..420e270 100755
+index 059a69b..2c0cae5 100755
 --- a/upstream_repo/AltSign/AppleAPI+Authentication.cpp
 +++ b/upstream_repo/AltSign/AppleAPI+Authentication.cpp
 @@ -552,6 +552,7 @@ pplx::task<std::pair<std::shared_ptr<Account>, std::shared_ptr<AppleAPISession>>
@@ -94,17 +94,22 @@ index 059a69b..420e270 100755
  {
  	std::wstring url = L"/auth/verify/trusteddevice";
  	auto encodedURI = web::uri::encode_uri(url);
-@@ -795,7 +810,8 @@ pplx::task<bool> AppleAPI::RequestTwoFactorCode(
+@@ -795,7 +810,13 @@ pplx::task<bool> AppleAPI::RequestTwoFactorCode(
  		request.headers().add(pair.first, pair.second);
  	}
  
 -	auto task = this->gsaClient().request(request)
++	// Apple answers the pages under /auth with a bare 403 for an Android client, before it reads
++	// who is asking, so the code is requested as a Mac. Validating it works as either.
++	request.headers().remove(L"X-Mme-Client-Info");
++	request.headers().add(L"X-Mme-Client-Info", L"<Mac15,7> <macOS;27.0;26A5378j> <com.apple.AuthKit/1 (com.apple.akd/1.0)>");
++
 +	// A code Apple already pushed must not be requested again: that would send another.
 +	auto codeTask = codeAlreadySent ? verificationHandler() : this->gsaClient().request(request)
  		.then([=](http_response response)
  			{
  				return response.content_ready();
-@@ -808,7 +824,9 @@ pplx::task<bool> AppleAPI::RequestTwoFactorCode(
+@@ -808,7 +829,9 @@ pplx::task<bool> AppleAPI::RequestTwoFactorCode(
  				.then([=](std::vector<unsigned char> decompressedData)
  					{
  						return verificationHandler();
