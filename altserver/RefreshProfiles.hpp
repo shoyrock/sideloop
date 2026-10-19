@@ -24,7 +24,7 @@ inline int RefreshProfiles(const char *requestPath, const char *appleID, const c
         auto output = request.at("output").as_string();
         auto serial = RefreshSerial(request.at("certificate_serial").as_string());
         auto bundles = request.at("bundles").as_array();
-        if (teamID.empty() || output.empty() || bundles.empty() || bundles.size() > 128)
+        if (teamID.empty() || output.empty() || bundles.size() == 0 || bundles.size() > 128)
             throw std::runtime_error("invalid request");
         auto handler = []() -> pplx::task<std::optional<std::string>> {
             return pplx::create_task([]() -> std::optional<std::string> {

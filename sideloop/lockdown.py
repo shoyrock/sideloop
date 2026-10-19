@@ -40,7 +40,9 @@ def _mux_request(s, msg, tag=1):
 
 def _device_id(udid, mux):
     with _mux_connect(mux) as s:
-        for d in _mux_request(s, {"MessageType": "ListDevices"}).get("DeviceList", []):
+        devices = _mux_request(s, {"MessageType": "ListDevices"}).get("DeviceList", [])
+        # Prefer a connected cable when the muxer lists both Wi-Fi and USB.
+        for d in sorted(devices, key=lambda d: d['Properties'].get('ConnectionType') != 'USB'):
             if d["Properties"].get("SerialNumber", "").lower() == udid.lower():
                 return d["DeviceID"]
     raise LookupError(f"device {udid} not visible to the muxer")
@@ -59,19 +61,22 @@ class Lockdown:
         self.udid, self.mux = udid, mux
         self.pair = _pair_record(udid, mux)
         s = _mux_connect(mux)
-        port = struct.unpack(">H", struct.pack("<H", LOCKDOWN_PORT))[0]
-        r = _mux_request(s, {"MessageType": "Connect", "DeviceID": _device_id(udid, mux), "PortNumber": port})
-        if r.get("Number", 1) != 0:
-            s.close()
-            raise ConnectionError(f"muxer refused the lockdown connection ({r.get('Number')})")
         self.sock = s
-        r = self._call({"Request": "StartSession", "HostID": self.pair["HostID"],
-                        "SystemBUID": self.pair["SystemBUID"]})
-        if "Error" in r:
-            raise PermissionError(f"lockdown StartSession: {r['Error']}")
-        self.session = r["SessionID"]
-        if r.get("EnableSessionSSL"):
-            self._start_tls()
+        try:
+            port = socket.htons(LOCKDOWN_PORT)
+            r = _mux_request(s, {"MessageType": "Connect", "DeviceID": _device_id(udid, mux), "PortNumber": port})
+            if r.get("Number", 1) != 0:
+                raise ConnectionError(f"muxer refused the lockdown connection ({r.get('Number')})")
+            r = self._call({"Request": "StartSession", "HostID": self.pair["HostID"],
+                            "SystemBUID": self.pair["SystemBUID"]})
+            if "Error" in r:
+                raise PermissionError(f"lockdown StartSession: {r['Error']}")
+            self.session = r["SessionID"]
+            if r.get("EnableSessionSSL"):
+                self._start_tls()
+        except Exception:
+            self.sock.close()
+            raise
 
     def _start_tls(self):
         self.sock = _paired_tls(self.sock, self.pair)

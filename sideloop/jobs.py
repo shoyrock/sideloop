@@ -255,6 +255,7 @@ def run_capture(job, argv, timeout=None):
                          start_new_session=True)
     job.pid = p.pid
     deadline = time.monotonic() + timeout if timeout is not None else None
+    output_open = True
     try:
         while True:
             if job.cancelled or (deadline is not None and time.monotonic() >= deadline):
@@ -266,11 +267,20 @@ def run_capture(job, argv, timeout=None):
                 job.rc = 130 if job.cancelled else 124
                 break
             wait = min(0.2, max(0, deadline - time.monotonic())) if deadline is not None else 0.2
-            if select.select([p.stdout], [], [], wait)[0]:
+            if not output_open and p.poll() is not None:
+                break
+            if select.select([p.stdout] if output_open else [], [], [], wait)[0]:
                 chunk = os.read(p.stdout.fileno(), 4096)
                 if not chunk:
-                    break
-                job.add(chunk.decode('utf-8', 'replace'))
+                    output_open = False
+                else:
+                    job.add(chunk.decode('utf-8', 'replace'))
+    except BaseException:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        raise
     finally:
         p.stdout.close()
         rc = p.wait()

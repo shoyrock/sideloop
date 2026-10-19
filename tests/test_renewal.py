@@ -191,6 +191,13 @@ class RenewalTests(unittest.TestCase):
         jobs.run_capture(job,[sys.executable,'-c','pass'],timeout=2)
         self.assertEqual(job.rc,0)
 
+    def test_timeout_still_applies_after_child_closes_output(self):
+        import sys
+        job=jobs.Job('test','closed output'); started=time.monotonic()
+        jobs.run_capture(job,[sys.executable,'-c','import os,time; os.close(1); os.close(2); time.sleep(10)'],timeout=.1)
+        self.assertEqual(job.rc,124)
+        self.assertLess(time.monotonic()-started,2)
+
     def test_automatic_reinstall_requires_matching_receipt_ipa_and_installed_version(self):
         folder=config.APPS/'test.app'; folder.mkdir(parents=True); (folder/'app.ipa').write_bytes(b'original IPA')
         receipt={'bundle':BUNDLE,'version':'5.2','build':'501','keep_extensions':False,

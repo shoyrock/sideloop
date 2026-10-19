@@ -116,6 +116,11 @@ def verification(account_id):
 
 
 def _verification_data():
+    with _lock:
+        return _read_verification_data()
+
+
+def _read_verification_data():
     path = config.DATA / 'account-verification.json'
     try:
         data = json.loads(path.read_text())

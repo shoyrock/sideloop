@@ -192,10 +192,13 @@ def save_observed(state, installed):
                 'build': installed.get('CFBundleVersion', ''), 'checked_at': int(time.time())})
 
 
-def save_expiry(state, profiles, expected_cert):
+def save_expiry(state, profiles, expected_cert, reset_failures=True):
     expiry = min(epoch(p['ExpirationDate']) for _, p in profiles.values())
     state.mkdir(parents=True, exist_ok=True)
-    for name, value in [('expiry', str(expiry)), ('certificate', expected_cert), ('consecutive_failures', '0')]:
+    updates = [('expiry', str(expiry)), ('certificate', expected_cert)]
+    if reset_failures:
+        updates.append(('consecutive_failures', '0'))
+    for name, value in updates:
         tmp = state / (name + '.tmp')
         tmp.write_text(value)
         os.replace(tmp, state / name)
@@ -322,10 +325,7 @@ def check(app_id, udid, phone=None):
         cert = ''
     selected = select_profiles(phone.profiles(), installed, cert, udid)
     # A read-only check must not clear failure history.
-    failures = (state / 'consecutive_failures').read_text() if (state / 'consecutive_failures').exists() else None
-    expiry = save_expiry(state, selected, cert)
-    if failures is not None:
-        (state / 'consecutive_failures').write_text(failures)
+    expiry = save_expiry(state, selected, cert, reset_failures=False)
     print('Installed app checked; expiry ' + str(expiry))
 
 
