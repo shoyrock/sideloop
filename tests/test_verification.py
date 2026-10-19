@@ -150,7 +150,7 @@ if mode != 'silent':
         self.assertEqual(job.view(0)['last'], verification.SERVICE_HINT)
         self.assertFalse(job.view()['needs_input'])
         before = config.CONFIG.read_bytes()
-        saving = self.save_attempt('503', account='default')
+        saving = self.save_attempt('503', account='default', email='test@example.test')
         self.assertEqual(saving.view()['last'], verification.SERVICE_HINT + ' Account changes were not saved.')
         self.assertEqual(config.CONFIG.read_bytes(), before)
 

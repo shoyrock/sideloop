@@ -458,7 +458,8 @@ class AccountTests(unittest.TestCase):
         self.assertEqual(run().returncode, 1)
         self.assertEqual(len(attempts.read_text().splitlines()), 3)
         accounts.assign(DEVICE, self.second)
-        self.assertEqual(run('--force').returncode, 1)
+        self.install_marker(3600)
+        self.assertEqual(run().returncode, 1)
         self.assertEqual(attempts.read_text().splitlines()[-1], 'second@example.test')
         self.assertTrue((accounts._folder(self.second) / 'runtime' / '.auth-retry-after').exists())
 
