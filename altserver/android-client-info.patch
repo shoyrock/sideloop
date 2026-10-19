@@ -1,8 +1,7 @@
 diff --git a/src/AnisetteDataManager.cpp b/src/AnisetteDataManager.cpp
-index 6ae772e..ad1d8ce 100644
 --- a/src/AnisetteDataManager.cpp
 +++ b/src/AnisetteDataManager.cpp
-@@ -57,25 +57,17 @@ std::string GetAnisetteURL() {
+@@ -57,24 +57,27 @@
  	return U("https://armconverter.com/anisette/irGb3Quww8zrhgqnzmrx");
  }
  
@@ -11,32 +10,35 @@ index 6ae772e..ad1d8ce 100644
 -// "com.apple.dt.Xcode" with a 503. Replace every occurrence with
 -// "com.apple.akd" so no AnisetteData built from this manager ever leaks
 -// that string to Apple, regardless of what the anisette server returns.
-+// The X-Mme-Client-Info (device description) Apple sees for every request.
-+//
-+// anisette-v3-server makes its machine ID with Apple's Android ADI library but
-+// reports a Mac. Since 2026-10-12 GrandSlam refuses a sign-in whose client OS
-+// isn't the platform that made the machine ID: -80045, "This action cannot be
-+// completed at this time". Report an Android phone instead. Apple also answers
-+// HTTP 503 to client info naming "com.apple.dt.Xcode", so name akd.
++// Follow SideInstaller's October 2026 client policy: preserve a backend's own
++// identity, but replace the old stock Mac/Android identities Apple now refuses.
++// This is a compatibility fallback, not a conversion of the underlying ADI data.
  std::string SanitizeClientInfo(const std::string& clientInfo)
  {
 -	static const std::string needle = "com.apple.dt.Xcode";
 -	static const std::string replacement = "com.apple.akd";
 -
 -	std::string result = clientInfo;
--	size_t pos = 0;
--	while ((pos = result.find(needle, pos)) != std::string::npos)
--	{
--		result.replace(pos, needle.length(), replacement);
--		pos += replacement.length();
--	}
++	static const std::string windows = "<PC> <Windows;6.2(0,0);9200> <com.apple.AuthKit/1 (com.apple.iTunes/12.12.4.1)>";
++	const auto first = clientInfo.find_first_not_of(" \t\r\n");
++	if (first == std::string::npos) return windows;
++	std::string result = clientInfo.substr(first, clientInfo.find_last_not_of(" \t\r\n") - first + 1);
++	if (result.find("<MacBookPro13,2> <macOS;13.1;22C65>") == 0 ||
++		result.find("<MacBookPro15,1> <Mac OS X;10.15.2;19C57>") == 0 ||
++		result.find("<Android;") != std::string::npos) return windows;
++
++	// Keep the upstream Xcode sanitization for otherwise supported identities.
++	const std::string needle = "com.apple.dt.Xcode", replacement = "com.apple.akd";
+ 	size_t pos = 0;
+ 	while ((pos = result.find(needle, pos)) != std::string::npos)
+ 	{
+ 		result.replace(pos, needle.length(), replacement);
+ 		pos += replacement.length();
+ 	}
 -
--	return result;
-+	static const std::string android = "<Pixel 7> <Android;14;UQ1A.240205.002> <com.apple.AuthKit/1 (com.apple.akd/1.0)>";
-+	return android;
+ 	return result;
  }
  
- std::shared_ptr<AnisetteData> AnisetteDataManager::FetchAnisetteData()
 diff --git a/upstream_repo/AltSign/AppleAPI+Authentication.cpp b/upstream_repo/AltSign/AppleAPI+Authentication.cpp
 index 059a69b..2c0cae5 100755
 --- a/upstream_repo/AltSign/AppleAPI+Authentication.cpp

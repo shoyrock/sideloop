@@ -1,0 +1,15 @@
+diff --git a/upstream_repo/AltSign/AppleAPI+Authentication.cpp b/upstream_repo/AltSign/AppleAPI+Authentication.cpp
+--- a/upstream_repo/AltSign/AppleAPI+Authentication.cpp
++++ b/upstream_repo/AltSign/AppleAPI+Authentication.cpp
+@@ -991,6 +991,11 @@
+ 		.then([=](http_response response)
+ 			{
+ 				odslog("Received auth response status code: " << response.status_code());
++				if (response.status_code() < 200 || response.status_code() >= 300)
++				{
++					odslog("Apple authentication HTTP status: " << response.status_code());
++					throw APIError(APIErrorCode::InvalidResponse);
++				}
+ 				return response.extract_vector();
+ 			})
+ 				.then([=](std::vector<unsigned char> compressedData)

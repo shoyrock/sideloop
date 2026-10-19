@@ -16,6 +16,10 @@ REJECTED_HINT = ('Apple refused this Apple ID sign-in (-22411). Complete any ver
 SIGNER_HINT = ('Apple refused the sign-in from this signing service (-80045), not the Apple ID. '
                'Update Sideloop to the latest image, then try again.')
 
+SERVICE_HINT = ('Apple authentication service unavailable (HTTP 503). Apple may be refusing the signing '
+                'service identity, or its service may be temporarily unavailable. The password and MFA '
+                'have not been verified; changing the account is not a confirmed fix.')
+
 
 def _authenticate(job, candidate, work, unsaved=False):
     home = work / '.altserver'
@@ -38,6 +42,8 @@ def _authenticate(job, candidate, work, unsaved=False):
             job.say('Account verification cancelled.' + note)
         elif job.rc == 124:
             job.say('Account verification timed out. Try again when you can complete Apple verification.' + note)
+        elif 'Apple authentication HTTP status: 503' in job.lines:
+            job.say(SERVICE_HINT + note)
         elif any('-22411' in line for line in job.lines):
             job.say(REJECTED_HINT + note)
         elif any('-80045' in line for line in job.lines):
@@ -45,6 +51,8 @@ def _authenticate(job, candidate, work, unsaved=False):
         else:
             job.say('Apple sign-in was not verified; account changes were not saved.' if unsaved else
                     'Apple sign-in was not verified. See Details for the authentication error.')
+    if confirmed:
+        (work / '.auth-retry-after').unlink(missing_ok=True)
     return confirmed
 
 
@@ -71,5 +79,7 @@ def verify_and_save(job, account_id, candidate):
             job.rc = 1
             return
         saved = accounts.save(account_id, candidate['APPLE_ID'], candidate['APPLE_PASSWORD'])
+        work = config.DATA if saved == 'default' else accounts._folder(saved) / 'runtime'
+        (work / '.auth-retry-after').unlink(missing_ok=True)
         accounts.set_verification(saved, 'verified')
         job.saved_account = saved

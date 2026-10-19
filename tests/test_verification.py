@@ -39,6 +39,10 @@ if mode in ('mfa','wrong','cancel'):
     if code != '123456':
         print('Authentication failed: incorrect verification code (-21669).')
         sys.exit(1)
+if mode == '503':
+    print('Apple authentication HTTP status: 503')
+    print('Authentication failed: Server returned invalid response. (17).')
+    sys.exit(1)
 if mode == 'error':
     print('Authentication failed: This action cannot be completed at this time (-22411).')
     sys.exit(1)
@@ -138,6 +142,32 @@ if mode != 'silent':
         self.assertEqual(job.view(0)['last'], verification.SIGNER_HINT)
         self.assertIn('-80045', job.view(0)['lines'][-2])
         self.assertEqual(accounts.verification('default')['status'], 'failed')
+
+    def test_http_503_is_visible_and_does_not_request_mfa_or_save(self):
+        job, _ = self.launch('503')
+        self.assertEqual(job.rc, 1)
+        self.assertIn('Apple authentication HTTP status: 503', job.view(0)['lines'])
+        self.assertEqual(job.view(0)['last'], verification.SERVICE_HINT)
+        self.assertFalse(job.view()['needs_input'])
+        before = config.CONFIG.read_bytes()
+        saving = self.save_attempt('503', account='default')
+        self.assertEqual(saving.view()['last'], verification.SERVICE_HINT + ' Account changes were not saved.')
+        self.assertEqual(config.CONFIG.read_bytes(), before)
+
+    def test_verified_account_clears_only_its_automatic_retry_pause(self):
+        pause = self.root / '.auth-retry-after'
+        pause.write_text('2000000000')
+        other = accounts.save('new', 'other@example.test', 'synthetic-password')
+        other_pause = accounts._folder(other) / 'runtime' / '.auth-retry-after'
+        other_pause.parent.mkdir(parents=True, exist_ok=True)
+        other_pause.write_text('2000000000')
+        self.launch('503')
+        self.assertTrue(pause.exists())
+        self.launch()
+        self.assertFalse(pause.exists())
+        self.assertTrue(other_pause.exists())
+        self.save_attempt(account=other, email='other@example.test')
+        self.assertFalse(other_pause.exists())
 
     def test_cancelled_verification_does_not_mark_verified(self):
         job, worker = self.launch('cancel')

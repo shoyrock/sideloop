@@ -310,6 +310,16 @@ if [[ -n "$refused" ]]; then
   exit 1
 fi
 
+# Persist across watcher/device-arrival batches. Manual installs and renewals can retry now.
+AUTH_RETRY="$SIGNING_WORKDIR/.auth-retry-after"
+if (( FORCE == 0 )) && [[ -r "$AUTH_RETRY" ]]; then
+  retry_after="$(cat "$AUTH_RETRY")"
+  if [[ "$retry_after" =~ ^[0-9]{1,10}$ ]] && (( 10#$retry_after > $(now) )); then
+    log "skipped: Apple authentication HTTP 503; automatic retries paused until $(fmt_epoch "$retry_after")"
+    exit 0
+  fi
+fi
+
 announce() {
   if [[ -r "$EXPIRY" ]]; then
     local left="expired"
@@ -382,6 +392,7 @@ if (( rc == 0 )) && [[ -n "$reported_error" ]]; then rc=1; fi
 set -e
 
 if (( rc == 0 )) && stamp_success; then
+  rm -f "$AUTH_RETRY"
   msg="refreshed, valid until $(fmt_epoch "$(cat "$EXPIRY")")"
   log "OK $msg"; record ok "$msg"
   prune_profiles
@@ -394,6 +405,11 @@ if grep -q 'com.rileytestut.AltServer (9)' "$out"; then
   # iOS allows 3 apps signed with free developer profiles per device, whichever tool installed them.
   result=limit
   hint="$DEVICE_NAME already has the 3 apps iOS allows with free developer profiles ($(blocking_apps)). The limit counts apps from every Apple account, so another account won't help; delete one from the device, then tap Install again"
+elif grep -qx 'Apple authentication HTTP status: 503' "$out"; then
+  hint="Apple authentication service unavailable (HTTP 503); Apple may be refusing this signing service identity. Automatic retries for this account are paused for 30 minutes; verify it in Settings to retry now"
+  refused=1
+  (( rc == 0 )) && rc=1
+  printf '%s\n' "$(( $(now) + 1800 ))" > "$AUTH_RETRY"
 elif grep -q -- '-22411' "$out"; then
   hint="Apple could not complete authentication for $APPLE_ID (-22411); verify the account in Settings. This can also indicate a signing-service compatibility problem"
   refused=1

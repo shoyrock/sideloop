@@ -440,6 +440,36 @@ class AccountTests(unittest.TestCase):
         subprocess.run(["bash", str(REFRESH)], env=env, capture_output=True, text=True, timeout=60)
         self.assertEqual(len((self.root / "refused-attempts").read_text().splitlines()), 2)
 
+    def test_auth_503_pause_persists_but_manual_retry_and_other_accounts_work(self):
+        self.install_marker(3600)
+        env = {**self.fake_tools(), 'TEST_REFUSE': '503'}
+        def run(*args):
+            return self.refresh(env, *args)
+        first = run()
+        self.assertEqual(first.returncode, 1, first.stdout + first.stderr)
+        pause = self.root / '.auth-retry-after'
+        self.assertGreater(int(pause.read_text()), time.time() + 1700)
+        self.assertEqual(run().returncode, 0)
+        attempts = self.root / 'refused-attempts'
+        self.assertEqual(len(attempts.read_text().splitlines()), 1)
+        self.assertEqual(run('--force').returncode, 1)
+        self.assertEqual(len(attempts.read_text().splitlines()), 2)
+        pause.write_text(str(int(time.time()) - 1))
+        self.assertEqual(run().returncode, 1)
+        self.assertEqual(len(attempts.read_text().splitlines()), 3)
+        accounts.assign(DEVICE, self.second)
+        self.assertEqual(run('--force').returncode, 1)
+        self.assertEqual(attempts.read_text().splitlines()[-1], 'second@example.test')
+        self.assertTrue((accounts._folder(self.second) / 'runtime' / '.auth-retry-after').exists())
+
+    def test_generic_error_17_does_not_pause_automatic_signing(self):
+        self.install_marker(3600)
+        env = {**self.fake_tools(), 'TEST_REFUSE': '17'}
+        self.assertEqual(self.refresh(env).returncode, 1)
+        self.assertFalse((self.root / '.auth-retry-after').exists())
+        self.assertEqual(self.refresh(env).returncode, 1)
+        self.assertEqual(len((self.root / 'refused-attempts').read_text().splitlines()), 2)
+
     def test_runs_that_leave_apps_due_back_off(self):
         self.install_marker(3600)
         w = Watcher(None, None)

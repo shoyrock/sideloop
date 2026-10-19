@@ -36,6 +36,10 @@ elif command == "AltServer" and os.environ.get("TEST_REFUSE"):
         f.write(os.environ["ALTSERVER_APPLE_ID"] + "\n")
     if os.environ["TEST_REFUSE"] == "mfa":
         print("Enter two factor code\nError: authentication cancelled without a verification code")
+    elif os.environ["TEST_REFUSE"] == "503":
+        print("Apple authentication HTTP status: 503\nError: com.rileytestut.ALTAppleAPI (17).")
+    elif os.environ["TEST_REFUSE"] == "17":
+        print("Error: com.rileytestut.ALTAppleAPI (17).")
     else:
         print("Error: This action cannot be completed at this time. (-80045)")
     sys.exit(1)

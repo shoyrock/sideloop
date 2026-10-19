@@ -31,6 +31,7 @@ ALTSTORE_LIMIT = "Please deactivate a sideloaded app with AltStore"
 LIMIT_ADVICE = ("Delete one of these apps from the device, then install again. Offloaded apps still count, "
                 "so turn off Offload Unused Apps in Settings > App Store.")
 VERIFY_PUBLIC = re.compile(r'^(?:Enter two factor code$|Requires two factor\.\.\.$|'
+                          r'Apple authentication HTTP status: [0-9]{3}$|Apple authentication service unavailable|'
                           r'Authentication failed:|Account authentication succeeded\.$|'
                           r'Signing in to Apple to verify|Account verification (?:cancelled|timed out)|'
                           r'Apple sign-in was not verified|Apple refused (?:this Apple ID|the sign-in))')

@@ -9,7 +9,7 @@ FROM ${ANISETTE_IMAGE} AS anisette
 # free provisioning profile on the device before installing, which makes iOS forget that the user
 # trusted the developer, so each refresh brought back "Untrusted Developer". It also loads each file
 # byte by byte and sends it as one packet, so large app binaries time out over Wi-Fi. And it reports
-# a Mac with Android-made Anisette data, which Apple refuses with -80045 since October 2026.
+# outdated client identities, which Apple began rejecting in October 2026.
 FROM ghcr.io/nyamisty/altserver_builder_alpine_aarch64@sha256:c8f77df8d22e9bf7b668c636fe0a660fb710c1671591c1c3c2d4397192efc5a2 AS altserver-arm64
 FROM ghcr.io/nyamisty/altserver_builder_alpine_amd64@sha256:b96e411d23a2c8472942990b72fb902f7f08ce290889d40e46ce80ccb1b77dd7 AS altserver-amd64
 FROM altserver-${TARGETARCH} AS altserver
