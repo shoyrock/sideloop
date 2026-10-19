@@ -444,7 +444,7 @@ function appsView() {
   </div>
   <div class="sect">
     <div class="list"><div class="cell">${tile("var(--green)", "flash")}<span class="k">Re-sign Automatically</span>${sw("auto", c.auto_check)}</div></div>
-    <div class="foot">Re-signs the apps you installed ${c.renew_before_days} day${c.renew_before_days > 1 ? "s" : ""} before they expire, when the device is on this network. New apps and devices are never installed automatically. Turn off Auto re-sign on an app to let it expire on that device.</div>
+    <div class="foot">Renews installed apps ${c.renew_before_days} day${c.renew_before_days > 1 ? "s" : ""} before they expire, when the device is on this network. Normal renewals transfer only profiles. Saved IPA updates require Install / Update. A full re-sign is automatic only when the saved IPA still matches the recorded installation.</div>
   </div>`;
 }
 
@@ -493,7 +493,7 @@ function renderSheet() {
         ${i < at ? ic("checkmark-circle", 22) : i === at ? spinner(20) : `<span class="dot"></span>`}<span class="k">${l}</span></div>`).join("")}</div></div>`;
   }
   else if (j.running) { mode = "spin"; main = `<div class="state"><span style="color:var(--label-2)">${spinner(30)}</span><div class="msg">${esc(last)}</div></div>`; }
-  else if (j.rc === 0) { mode = "ok"; main = `<div class="state"><div class="glyph ok">${ic("checkmark", 32)}</div><div class="ttl">${j.saved_account ? "Account Saved" : j.kind === "verify" ? "Account Verified" : "Done"}</div>${j.kind === "verify" ? `<div class="msg">${j.saved_account ? "Apple accepted your sign-in and the account was saved." : "Apple accepted your sign-in. No apps were installed."}</div>` : j.kind === "refresh" && j.app ? `<div class="msg">${who} is signed and installed.</div>` : ""}</div>`; }
+  else if (j.rc === 0) { mode = "ok"; main = `<div class="state"><div class="glyph ok">${ic("checkmark", 32)}</div><div class="ttl">${j.saved_account ? "Account Saved" : j.kind === "verify" ? "Account Verified" : "Done"}</div>${j.kind === "verify" ? `<div class="msg">${j.saved_account ? "Apple accepted your sign-in and the account was saved." : "Apple accepted your sign-in. No apps were installed."}</div>` : j.kind === "refresh" && j.app ? `<div class="msg">${j.stage === "renew" ? "Profiles renewed without copying the app." : "The operation completed successfully."}</div>` : ""}</div>`; }
   else { mode = "fail"; main = `<div class="state"><div class="glyph bad">${ic("close", 32)}</div><div class="ttl">Didn't Work</div><div class="msg">${esc(last)}</div></div>`; }
 
   const box = $("#sh-main");
