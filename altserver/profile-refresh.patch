@@ -1,0 +1,56 @@
+--- a/src/AltServerMain.cpp
++++ b/src/AltServerMain.cpp
+@@ -21,6 +21,7 @@
+ #include "Error.hpp"
+ #include "AppleAPI.hpp"
+ #include "AnisetteDataManager.h"
++#include "RefreshProfiles.hpp"
+ 
+ #include "AltServerApp.h"
+ 
+@@ -101,6 +102,7 @@
+           //{"ipaddr",	required_argument,		0, 'i'},
+ 		  //{"pairData",	required_argument,      0, 'P'},
+ 		  {"verify-account", no_argument, 0, 'v'},
++          {"refresh-profiles", required_argument, 0, 'r'},
+ 		  {"debug",		no_argument,      		0, 'd'},
+           {0, 0, 0, 0}
+         };
+@@ -114,6 +116,7 @@
+ 	char *ipaPath = NULL;
+ 	int debugLogLevel = 0;
+ 	bool verifyAccount = false;
++    const char *refreshRequest = nullptr;
+ 
+ 	while (1) {
+ 		int this_option_optind = optind ? optind : 1;
+@@ -139,7 +142,10 @@
+ 		case 'P':
+             pairDataFile = optarg;
+ 			break;
+-		case 'v':
++		case 'r':
++            refreshRequest = optarg;
++            break;
++        case 'v':
+ 			verifyAccount = true;
+ 			break;
+ 		case 'd':
+@@ -165,7 +171,7 @@
+ 	if (!password) password = getenv("ALTSERVER_APPLE_PASSWORD");
+ 
+ 	bool installApp = true;
+-	if (verifyAccount) {
++	if (verifyAccount || refreshRequest) {
+ 		if (!appleID) appleID = getenv("ALTSERVER_APPLE_ID");
+ 		if (!password) password = getenv("ALTSERVER_APPLE_PASSWORD");
+ 		if (!appleID || !password || optind != argc) {
+@@ -199,6 +205,8 @@
+     
+ 	signal(SIGPIPE, SIG_IGN);
+ 
++
++    if (refreshRequest) return RefreshProfiles(refreshRequest, appleID, password);
+ 
+     if (verifyAccount) {
+         try {

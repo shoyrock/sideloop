@@ -16,9 +16,13 @@ FROM altserver-${TARGETARCH} AS altserver
 ARG ALTSERVER_TAG
 ARG BUILD_JOBS=4
 COPY altserver/*.patch /tmp/patches/
+COPY altserver/RefreshProfiles.hpp /tmp/RefreshProfiles.hpp
+COPY tests/check_afc_writes.py /tmp/check_afc_writes.py
 RUN git clone -q --recursive --depth 1 --shallow-submodules -b "$ALTSERVER_TAG" \
       https://github.com/jaakkopalvaila/AltServer-Linux /src \
  && cd /src && git apply /tmp/patches/*.patch \
+ && cp /tmp/RefreshProfiles.hpp /src/src/RefreshProfiles.hpp \
+ && python3 /tmp/check_afc_writes.py /src/libraries/libimobiledevice/src/afc.c \
  && mkdir build && cd build && make -f ../Makefile -j"${BUILD_JOBS}" \
  && cp AltServer-* /AltServer
 

@@ -403,16 +403,21 @@ function appsView() {
       <div class="shead"><div class="ttl"><h3>${esc(d.name)}</h3><span class="acct">Signs with ${esc(accountName(d.account))}</span></div><span class="badge ${cls}" style="font-size:13px">${label}</span></div>
       <div class="list">${rows.map(({a, t}) => {
         const s = sig(t), lr = t.signature.last_run, limit = !t.signature.expiry && lr && lr.result === "limit";
-        const failed = lr && (lr.result === "fail" || limit);
+        const repair = lr && lr.result === "repair";
+        const failed = lr && (lr.result === "fail" || limit || repair);
         const pct = t.signature.expiry ? Math.max(0, Math.min(100, s.left / life * 100)) : 0;
-        const status = t.needs_ios ? `Needs iOS ${esc(t.needs_ios)} or later; this device has iOS ${esc(d.ios)}`
-          : limit ? "Device already has 3 sideloaded apps (from any account); delete one, then tap Install" : failed ? "Last re-sign failed" : s.text;
+        const status = repair ? "Full re-sign needed — use Install / Update"
+          : limit ? "Device already has 3 sideloaded apps (from any account); delete one, then tap Install" : failed ? "Last renewal failed" : s.text;
         return `<div class="approw">${appIcon(a, "md")}
           <div class="mid"><div class="nm">${esc(a.name)}</div>
+            <div class="st">${t.installed && t.installed.version ? `Installed ${esc(t.installed.version)} · ` : ""}Saved IPA ${esc(a.version || "version unknown")}</div>
             <div class="st ${t.needs_ios || failed ? "bad" : s.cls}" title="${failed ? esc(lr.message) : ""}">${status}</div>
             ${t.signature.expiry ? `<div class="meter ${s.cls}"><i style="width:${pct}%"></i></div>
             <div class="chips"><button class="chip ${t.auto ? "on" : ""}" data-auto="${esc(a.id)}" data-dev="${esc(d.udid)}" aria-pressed="${t.auto}" ${busy ? "disabled" : ""}>${t.auto ? ic("checkmark", 12) + "Auto re-sign" : "Auto re-sign off"}</button></div>` : ""}</div>
-          <button class="cap ${s.cls === "ok" ? "" : "solid"}" data-sign="${esc(a.id)}" data-dev="${esc(d.udid)}" ${busy || t.needs_ios ? "disabled" : ""}>${t.signature.expiry ? "Re-sign" : "Install"}</button></div>`;
+          <div style="display:flex;flex-direction:column;gap:8px;align-items:flex-end">
+            ${t.signature.expiry ? `<button class="cap" data-sign="${esc(a.id)}" data-dev="${esc(d.udid)}" ${busy ? "disabled" : ""}>Renew</button>` : ""}
+            <button class="cap ${t.signature.expiry ? "" : "solid"}" data-install="${esc(a.id)}" data-dev="${esc(d.udid)}" ${busy || t.needs_ios ? "disabled" : ""} title="${t.needs_ios ? `Saved IPA needs iOS ${esc(t.needs_ios)}` : "Install the saved IPA; existing versions may be replaced"}">Install / Update</button>
+          </div></div>`;
       }).join("") || `<div class="cell"><span class="k" style="color:var(--label-2)">No apps on this device</span><button class="linkbtn" data-go="settings">Choose</button></div>`}</div>
     </div>`;
   };
@@ -420,7 +425,7 @@ function appsView() {
   let autoCard = "";
   if (S.watcher.running) {
     const what = auto && auto.app ? esc(auto.app) : "your apps";
-    const sentence = auto && auto.stage ? {signin: `Signing in to install ${what}…`, sign: `Signing ${what}…`, send: `Copying ${what} to the device…`, install: `Installing ${what}…`}[auto.stage]
+    const sentence = auto && auto.stage ? {signin: `Signing in for ${what}…`, renew: `Renewing ${what} without copying the app…`, sign: `Signing ${what}…`, send: `Copying ${what} to the device…`, install: `Installing ${what}…`}[auto.stage]
                    : `Checking ${what}…`;
     const p = auto && auto.stage ? Math.round(pct(auto) * 100) : null;
     autoCard = `<div class="banner auto"><span style="color:var(--label-2)">${spinner(20)}</span><div style="flex:1;min-width:0">
@@ -432,7 +437,7 @@ function appsView() {
   ${devs.map(section).join("")}
   <div class="sect">
     <div class="list">
-      ${targets > 1 ? `<button class="cell action" id="signall" ${busy ? "disabled" : ""}>${ic("sync", 22)}Re-sign Installed Apps</button>` : ""}
+      ${targets > 1 ? `<button class="cell action" id="signall" ${busy ? "disabled" : ""}>${ic("sync", 22)}Renew Installed Apps</button>` : ""}
       <button class="cell action" id="recheck" ${busy ? "disabled" : ""}>${ic("refresh", 22)}Check Everything</button>
       <button class="cell action" data-go="settings">${ic("add-circle", 22)}Add App or Device</button>
     </div>
@@ -444,7 +449,7 @@ function appsView() {
 }
 
 const STEPS = [["signin", "Sign in to Apple"], ["sign", "Sign app"], ["send", "Copy to device"], ["install", "Install"]];
-const SPAN = {signin: [0, .06], sign: [.06, .5], send: [.5, .95], install: [.95, 1]};
+const SPAN = {signin: [0, .06], renew: [.06, .95], sign: [.06, .5], send: [.5, .95], install: [.95, 1]};
 const sheetHost = document.body.appendChild(Object.assign(document.createElement("div"), {id: "sheethost"}));
 let sheetFor = null;
 const patch = (el, html) => { if (el && el._h !== html) { el._h = html; el.innerHTML = html; } };
@@ -479,11 +484,12 @@ function renderSheet() {
   else if (j.running && j.kind === "verify") { mode = "spin"; main = `<div class="state">${spinner(30)}<div class="msg">Verifying your Apple Account…</div></div>`; }
   else if (j.running && j.stage) {
     mode = "progress";
-    const p = Math.round(pct(j) * 100), at = STEPS.findIndex(([k]) => k === j.stage);
-    const sentence = {signin: "Signing in to Apple…", sign: `Signing ${who}…`, send: "Copying to the device…", install: "Installing…"}[j.stage];
+    const steps = j.stage === 'renew' ? [['signin', 'Sign in to Apple'], ['renew', 'Renew installed profiles']] : STEPS;
+    const p = Math.round(pct(j) * 100), at = steps.findIndex(([k]) => k === j.stage);
+    const sentence = {signin: "Signing in to Apple…", renew: "Renewing profiles — no app transfer…", sign: `Signing ${who}…`, send: "Copying to the device…", install: "Installing…"}[j.stage];
     main = `<div class="prog"><div class="sentence">${sentence}</div>
       <div class="pbar"><i style="width:${p}%"></i></div><div class="pct">${p}%</div>
-      <div class="list steps">${STEPS.map(([k, l], i) => `<div class="cell ${i < at ? "done" : i === at ? "now" : ""}">
+      <div class="list steps">${steps.map(([k, l], i) => `<div class="cell ${i < at ? "done" : i === at ? "now" : ""}">
         ${i < at ? ic("checkmark-circle", 22) : i === at ? spinner(20) : `<span class="dot"></span>`}<span class="k">${l}</span></div>`).join("")}</div></div>`;
   }
   else if (j.running) { mode = "spin"; main = `<div class="state"><span style="color:var(--label-2)">${spinner(30)}</span><div class="msg">${esc(last)}</div></div>`; }
@@ -716,6 +722,12 @@ function wire() {
   root.querySelectorAll("[data-view]").forEach(b => b.onclick = () => go(b.dataset.view));
   root.querySelectorAll("[data-go]").forEach(b => b.onclick = () => go(b.dataset.go));
   root.querySelectorAll("[data-sign]").forEach(b => b.onclick = () => startJob("/api/refresh", {force:true, app:b.dataset.sign, device:b.dataset.dev}));
+  root.querySelectorAll('[data-install]').forEach(b => b.onclick = () => {
+    const a = S.apps.find(x => x.id === b.dataset.install), t = a.targets.find(x => x.udid === b.dataset.dev);
+    const current = t.installed && t.installed.version ? `Installed version: ${t.installed.version}. ` : 'The installed version may differ. ';
+    if (confirm(`${current}Install saved ${a.name} ${a.version || ''} on ${t.name}? This copies the complete app and replaces any existing version, including a newer one. Use Renew to keep the current version.`))
+      startJob('/api/refresh', {operation:'install', confirm_replace:true, app:a.id, device:t.udid});
+  });
   root.querySelectorAll("[data-add]").forEach(b => b.onclick = () => act(() => api("/api/device/add", {json:{udid:b.dataset.add}}), "Device added"));
   root.querySelectorAll("[data-auto]").forEach(b => b.onclick = () =>
     act(() => api("/api/app/auto", {json:{app:b.dataset.auto, device:b.dataset.dev, auto:!b.classList.contains("on")}})));
@@ -790,7 +802,7 @@ function wire() {
   });
   root.querySelectorAll("[data-ext]").forEach(el => el.onchange = () =>
     act(() => api("/api/app/extensions", {json:{app:el.dataset.ext, keep:el.checked}}), el.checked ? "Extensions will be kept" : "Extensions will be removed"));
-  on("useipa", "onclick", () => act(async () => { await api("/api/ipa/use", {json:{filename:pending.filename}}); pending = null; }, "App added"));
+  on("useipa", "onclick", () => act(async () => { await api("/api/ipa/use", {json:{filename:pending.filename, upload_id:pending.upload_id}}); pending = null; }, "App added"));
   on("dropipa", "onclick", () => { pending = null; render(); });
   const drop = $("#drop"), file = $("#file");
   if (drop && file) {
@@ -812,7 +824,7 @@ function upload(f) {
   x.upload.onload = () => { txt.textContent = "Reading the app…"; };
   x.onload = () => {
     let r = {}; try { r = JSON.parse(x.responseText); } catch {}
-    if (x.status === 200) pending = {info: r.info, filename: f.name}; else toast(r.error || `Upload failed (${x.status})`);
+    if (x.status === 200) pending = {info: r.info, upload_id:r.upload_id, filename: f.name}; else toast(r.error || `Upload failed (${x.status})`);
     render(); poll();
   };
   x.onerror = () => { toast("Upload failed"); render(); poll(); };

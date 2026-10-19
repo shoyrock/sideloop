@@ -96,4 +96,19 @@ with tempfile.TemporaryDirectory() as folder:
             assert 'synthetic-private-response' not in output
         assert not (root/'AltServerData').exists()
         print('PASS: compiled auth-only entrypoint, verified TLS: ' + label)
+    operations.clear(); client_identities.clear()
+    request = root/'refresh.json'
+    request.write_text(json.dumps({'team':'TEAM123456', 'certificate_serial':'01',
+                                   'bundles':['test.app.TEAM123456'], 'output':str(root)}))
+    result = subprocess.run(['AltServer','--refresh-profiles',str(request)], cwd=root,
+                            env={**os.environ, 'TZ':'UTC',
+                                 'ALTSERVER_APPLE_ID':'synthetic@example.test',
+                                 'ALTSERVER_APPLE_PASSWORD':'synthetic-password',
+                                 'ALTSERVER_ANISETTE_SERVER':'http://127.0.0.1:6969'},
+                            capture_output=True,text=True,timeout=15)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert operations == ['init'], operations
+    assert not list(root.glob('*.mobileprovision'))
+    assert not (root/'AltServerData').exists()
+    print('PASS: compiled profile-only entrypoint authenticates and preserves data on rejection')
     for server in (anisette, apple): server.shutdown()

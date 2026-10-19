@@ -9,7 +9,7 @@ import traceback
 import urllib.parse
 from pathlib import Path
 
-from . import accounts, auth, config, ipa, pairing, store, verification
+from . import accounts, auth, config, ipa, pairing, store, uploads, verification
 from .config import LIFETIME_DAYS, MUX, PENDING_IPA, STATE
 from .jobs import redact, run_capture, run_pty
 from .log import log
@@ -138,13 +138,16 @@ class App:
         store.set_keep_extensions(app["id"], bool(data.get("keep")))
 
     def use_ipa(self, data):
-        if not PENDING_IPA.exists():
-            raise ValueError("upload an IPA first")
-        info = ipa.inspect(PENDING_IPA)
-        if "error" in info:
-            raise ValueError(info["error"])
-        self.idle()
-        return {"id": store.add_app(PENDING_IPA, info, str(data.get("filename", "")))}
+        with self.jobs.lock:
+            self.idle()
+            path = uploads.claim(data.get('upload_id'), data.get('_session', ''))
+            try:
+                info = ipa.inspect(path)
+                if 'error' in info:
+                    raise ValueError(info['error'])
+                return {'id': store.add_app(path, info, str(data.get('filename', '')))}
+            finally:
+                path.unlink(missing_ok=True)
 
     def remove_app(self, data):
         if str(data.get("id")) not in store.app_ids():
@@ -216,10 +219,18 @@ class App:
         if not configured():
             raise ValueError("finish setup first")
         args, what = self._target(data)
+        if data.get('operation') == 'install':
+            if not data.get('app') or not data.get('device'):
+                raise ValueError('choose one app and one device to install or update')
+            if data.get('confirm_replace') is not True:
+                raise ValueError('confirm replacing the installed app with the saved IPA')
+            args += ['--force', '--install', '--confirm-replace']
+            return {'job': self.jobs.start('refresh', f'Installing / updating {what}',
+                                          lambda j: run_pty(j, ['refresh.sh', *args])).id}
         if data.get("force"):
             # Re-signing several apps never installs the ones that aren't installed yet.
             args = args + ["--force"] + ([] if data.get("app") else ["--resign-only"])
-            title = f"Signing {what}"
+            title = f"Renewing {what}"
         else:
             title = "Checking if a refresh is due"
         return {"job": self.jobs.start("refresh", title, lambda j: run_pty(j, ["refresh.sh", *args])).id}
@@ -421,6 +432,8 @@ def handler(app):
             if path not in routes:
                 return self.error(404, "not found")
             try:
+                if path == '/api/ipa/use':
+                    data['_session'] = self.cookie()
                 self.send(200, routes[path](data) or {"ok": True})
             except RuntimeError as e:
                 self.error(409, str(e))
@@ -440,24 +453,25 @@ def handler(app):
                 return self.error(400, str(e))
             if not 0 < n < MAX_IPA:
                 return self.error(400, "empty or too large")
-            PENDING_IPA.parent.mkdir(parents=True, exist_ok=True)
-            fd = os.open(PENDING_IPA, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            upload_id, pending_path = uploads.create(self.cookie())
+            fd = os.open(pending_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "wb") as f:
                 while n and (chunk := self.rfile.read(min(n, 1 << 20))):
                     f.write(chunk)
                     n -= len(chunk)
             if n:
-                PENDING_IPA.unlink(missing_ok=True)
+                pending_path.unlink(missing_ok=True)
                 return self.error(400, "upload interrupted")
             try:
-                info = ipa.inspect(PENDING_IPA)
+                info = ipa.inspect(pending_path)
             except Exception as e:
                 info = {"error": "the IPA can't be read"}
                 log(f"IPA inspection failed: {type(e).__name__}: {e}")
             if "error" in info:
-                PENDING_IPA.unlink(missing_ok=True)
+                pending_path.unlink(missing_ok=True)
                 return self.error(400, info["error"])
-            self.send(200, {"info": info})
+            uploads.complete(upload_id, self.cookie())
+            self.send(200, {"info": info, "upload_id": upload_id})
 
     return Handler
 

@@ -20,7 +20,7 @@ SECRET = re.compile(r"^(Data|Value) ?: |^X-(Apple|Mme|MMe)-|^(MachineID|One-Time
                     r"^Received (auth )?response|^Signing: ")
 PROGRESS = re.compile(r"^(Signing|Installation) Progress:\s*([0-9.eE+-]+)")
 NOISE = re.compile(r"^Writing File: ")
-APP_START = re.compile(r"\[(.+?)\] (?:signing and installing|no signature on record|signature has)")
+APP_START = re.compile(r"\[(.+?)\] (?:signing and installing|renewing installed profiles|no signature on record|signature has)")
 MAX_LINE = 400
 # AltServer reports every DeviceOSVersionTooLow rejection with AltStore's own requirement.
 # refresh.sh's failure line names the app's actual minimum.
@@ -117,7 +117,9 @@ class Job:
             self.stage, self.fraction = "send", 0.0
         elif line.startswith(("Installed profile", "Notify: Installation")):
             self.stage, self.fraction = "install", 1.0
-        elif "signing and installing" in line:
+        elif line.startswith(('Renewing installed app profiles', 'Fetching renewal profiles', 'Installing renewal profiles')):
+            self.stage, self.fraction = 'renew', 0.5
+        elif "signing and installing" in line or "renewing installed profiles" in line:
             if m := APP_START.search(line):
                 self.app = m.group(1)
             self.stage, self.fraction = "signin", 0.0
@@ -252,11 +254,25 @@ def run_capture(job, argv, timeout=None):
     p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                          start_new_session=True)
     job.pid = p.pid
-    deadline = time.time() + timeout if timeout else None
-    for chunk in iter(lambda: p.stdout.read1(4096), b""):
-        job.add(chunk.decode("utf-8", "replace"))
-        if deadline and time.time() > deadline:
-            os.killpg(p.pid, signal.SIGKILL)
-            job.say("✗ timed out")
-            break
-    job.rc = p.wait()
+    deadline = time.monotonic() + timeout if timeout is not None else None
+    try:
+        while True:
+            if job.cancelled or (deadline is not None and time.monotonic() >= deadline):
+                try:
+                    os.killpg(p.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                job.say('✗ cancelled' if job.cancelled else '✗ timed out')
+                job.rc = 130 if job.cancelled else 124
+                break
+            wait = min(0.2, max(0, deadline - time.monotonic())) if deadline is not None else 0.2
+            if select.select([p.stdout], [], [], wait)[0]:
+                chunk = os.read(p.stdout.fileno(), 4096)
+                if not chunk:
+                    break
+                job.add(chunk.decode('utf-8', 'replace'))
+    finally:
+        p.stdout.close()
+        rc = p.wait()
+        if job.rc is None:
+            job.rc = rc

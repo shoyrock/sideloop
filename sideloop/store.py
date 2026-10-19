@@ -1,4 +1,5 @@
 import os
+import hashlib
 import re
 import shutil
 import time
@@ -21,7 +22,8 @@ def read_state(folder):
     last_run = None
     if len(lr) >= 2 and lr[0].isdigit():
         last_run = {"t": int(lr[0]), "result": lr[1], "message": lr[2] if len(lr) > 2 else ""}
-    return {"expiry": int(rd("expiry") or 0) or None, "last_run": last_run}
+    expiry = rd('expiry')
+    return {"expiry": int(expiry) if expiry.isdigit() else None, "last_run": last_run}
 
 
 def device_ids():
@@ -99,6 +101,7 @@ def set_app_devices(app_id, udids):
 
 
 def app_view(app_id):
+    from .renewal import read_json
     d, meta = APPS / app_id, app_meta(app_id)
     info = ipa.cached(d)
     keep = meta["KEEP_EXTENSIONS"] == "1"
@@ -113,6 +116,7 @@ def app_view(app_id):
         "min_ios": min_ios,
         "targets": [{"udid": u, "name": device_name(u), "account": accounts.resolve(app_id, u),
                      "signature": read_state(accounts.state_folder(app_id, u)),
+                     "installed": read_json(accounts.state_folder(app_id, u) / 'installed.json'),
                      "auto": auto_resign(app_id, u),
                      "needs_ios": min_ios if ipa.requires_newer(min_ios, device_ios(u)) else ""}
                     for u in app_devices(app_id, meta)],
@@ -120,11 +124,18 @@ def app_view(app_id):
 
 
 def add_app(src, info, filename):
-    app_id = re.sub(r"[^A-Za-z0-9._-]", "_", info["bundle_id"])[:120] or "app"
+    bundle = info['bundle_id']
+    # Reuse legacy directories only when their full ID matches. Never overwrite
+    # another IPA just because two long IDs share the same first 120 characters.
+    existing = next((a for a in app_ids() if app_meta(a)['BUNDLE_ID'] == bundle), None)
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", bundle)
+    app_id = existing or (safe if len(safe) <= 120 else safe[:90] + '-' + hashlib.sha256(bundle.encode()).hexdigest()[:24])
     # The id is a folder name under APPS; "." or ".." would escape it.
     if app_id.startswith(".") or ".." in app_id:
         raise ValueError("the app's bundle identifier isn't valid")
     d = APPS / app_id
+    if (d / 'meta.env').exists() and app_meta(app_id)['BUNDLE_ID'] != bundle:
+        raise ValueError('another app already uses this storage identifier')
     (d / "state").mkdir(parents=True, exist_ok=True)
     os.replace(src, d / "app.ipa")
     old = app_meta(app_id)

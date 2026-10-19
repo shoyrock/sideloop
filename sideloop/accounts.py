@@ -112,11 +112,30 @@ def save(account_id, email, password=""):
 
 
 def verification(account_id):
+    return _verification_data().get(account_id, {"status": "unverified"})
+
+
+def _verification_data():
     path = config.DATA / 'account-verification.json'
     try:
-        return json.loads(path.read_text()).get(account_id, {"status": "unverified"})
+        data = json.loads(path.read_text())
+        if not isinstance(data, dict) or any(not isinstance(v, dict) or
+                v.get('status') not in ('unverified', 'checking', 'verified', 'failed') or
+                ('checked_at' in v and (type(v['checked_at']) is not int or v['checked_at'] < 0))
+                for v in data.values()):
+            raise ValueError('invalid verification status')
+        return data
     except FileNotFoundError:
-        return {"status": "unverified"}
+        return {}
+    except (ValueError, UnicodeError):
+        # Status is only a cache. Preserve the damaged copy for inspection; never
+        # touch credentials or signing data when recovering from a damaged cache.
+        with _lock:
+            try:
+                path.replace(path.with_name(path.name + '.invalid-' + secrets.token_hex(6)))
+            except FileNotFoundError:
+                pass
+        return {}
 
 
 def set_verification(account_id, status):
@@ -124,7 +143,7 @@ def set_verification(account_id, status):
     with _lock:
         credentials(account_id)
         path = config.DATA / 'account-verification.json'
-        data = json.loads(path.read_text()) if path.exists() else {}
+        data = _verification_data()
         data[account_id] = {"status": status, "checked_at": int(time.time())}
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix('.tmp')

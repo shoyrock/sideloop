@@ -33,12 +33,9 @@ class Watcher:
         """When each installed, auto re-signed target enters its renewal window."""
         window = config.renew_before_days() * 86400
         for app_id in store.app_ids():
-            min_ios = ipa.required_ios(ipa.cached(config.APPS / app_id),
-                                       store.app_meta(app_id)["KEEP_EXTENSIONS"] == "1")
             for udid in store.app_devices(app_id):
-                # An app the device's iOS can't run is flagged in the UI; retrying it can't succeed.
-                if ipa.requires_newer(min_ios, store.device_ios(udid)):
-                    continue
+                # Renew the installed version even if a newer library IPA needs
+                # a newer iOS. Uploading an update must not stop its renewals.
                 # Only apps the user installed and left on auto re-sign; never first installs.
                 expiry = store.read_state(accounts.state_folder(app_id, udid))["expiry"]
                 if expiry and store.auto_resign(app_id, udid):

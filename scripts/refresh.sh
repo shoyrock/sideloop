@@ -13,10 +13,13 @@ set -a; . "$CONFIG"; set +a
 : "${RENEW_BEFORE_DAYS:=2}"
 : "${ANISETTE_SERVER:=http://127.0.0.1:6969}"
 
-FORCE=0; RECHECK=0; RESIGN_ONLY=0; APP=""; DEVICE=""
+FORCE=0; RECHECK=0; RESIGN_ONLY=0; INSTALL=0; CONFIRM_REPLACE=0; REPAIR=0; APP=""; DEVICE=""
 while (( $# )); do
   case "$1" in
     --force) FORCE=1 ;;
+    --install) INSTALL=1 ;;
+    --confirm-replace) CONFIRM_REPLACE=1 ;;
+    --repair) REPAIR=1 ;;
     # With --force for several apps: re-sign installed apps, don't install the rest.
     --resign-only) RESIGN_ONLY=1 ;;
     --recheck) RECHECK=1 ;;
@@ -45,6 +48,8 @@ if [[ -z "$APP" || -z "$DEVICE" ]]; then
       (( FORCE )) && args+=(--force)
       (( RESIGN_ONLY )) && args+=(--resign-only)
       (( RECHECK )) && args+=(--recheck)
+      (( INSTALL )) && args+=(--install)
+      (( CONFIRM_REPLACE )) && args+=(--confirm-replace)
       "${BASH_SOURCE[0]}" "${args[@]}" || rc=$?
     done
   done
@@ -280,9 +285,12 @@ read_fails() { local n=0; [[ -r "$FAILS" ]] && n="$(tr -cd '0-9' < "$FAILS")"; e
 
 if (( RECHECK )); then
   device_online || { echo "${TAG}${DEVICE_NAME} not reachable; unlock it and try again"; exit 1; }
-  p="$(probe_expiry)" || { rm -f "$EXPIRY"; log "not installed on this device"; exit 0; }
-  save_probe "$p"
-  log "rechecked on the device: signature valid until $(fmt_epoch "$(cat "$EXPIRY")")"
+  python3 -m sideloop.renewal check "$APP" "$DEVICE" || exit $?
+  if [[ -r "$EXPIRY" ]]; then
+    log "rechecked on the device: signature valid until $(fmt_epoch "$(cat "$EXPIRY")")"
+  else
+    log "not installed on this device"
+  fi
   exit 0
 fi
 
@@ -291,9 +299,6 @@ SECS_LEFT=-1; [[ -r "$EXPIRY" ]] && SECS_LEFT=$(( $(cat "$EXPIRY") - $(now) ))
 (( FORCE == 0 && SECS_LEFT > RENEW_BEFORE_DAYS * 86400 )) && exit 0
 
 if (( FORCE == 0 )); then
-  # The UI already flags an app the device's last known iOS can't run; automatic runs skip it quietly.
-  python3 -m sideloop.ipa "$APP_DIR" "$(stored_ios)" >/dev/null && compat=0 || compat=$?
-  (( compat == 3 )) && exit 0
   # Automatic checks only renew apps the user installed and left on auto re-sign; installing
   # an app on a device is always the user's choice.
   [[ -r "$EXPIRY" ]] || exit 0
@@ -341,6 +346,13 @@ if ! device_online; then
 fi
 announce
 
+if (( INSTALL )); then
+guard_args=(); (( CONFIRM_REPLACE )) && guard_args+=(--confirmed)
+(( REPAIR )) && guard_args+=(--repair)
+if ! python3 -m sideloop.renewal guard "$APP" "$DEVICE" "${guard_args[@]}"; then
+  record repair "could not confirm safe replacement; check the device and use Install / Update"
+  exit 1
+fi
 [[ -r "$IPA_PATH" ]] || { log "ERROR IPA missing: $IPA_PATH"; record fail "IPA missing"; exit 1; }
 
 # iOS rejects an app whose minimum version is newer than the device's only after it was signed
@@ -367,17 +379,23 @@ fi
 SIGN_IPA="$(python3 -m sideloop.ipa --signing-copy "$APP_DIR")" || { log "ERROR could not prepare the IPA"; record fail "could not prepare the IPA"; exit 1; }
 [[ "$SIGN_IPA" != "$IPA_PATH" ]] && log "removed the app's extensions so it uses one of the device's 3 app slots (keep them in Settings)"
 log "signing and installing $(basename "$IPA_PATH") on $DEVICE_UDID"
+command=("$ALTSERVER_BIN" -u "$DEVICE_UDID" "$SIGN_IPA")
+else
+log "renewing installed profiles on $DEVICE_NAME; no app transfer"
+command=(python3 -m sideloop.renewal renew "$APP" "$DEVICE")
+MIN_IOS=""; DEVICE_IOS=""
+fi
 out="$(mktemp)"
 trap 'rm -f "$STATE_DIR/.running" "$out"' EXIT
 set +e
 if [[ -t 0 && -t 1 ]]; then
   ALTSERVER_APPLE_ID="$APPLE_ID" ALTSERVER_APPLE_PASSWORD="$APPLE_PASSWORD" \
-  TZ=UTC timeout --foreground 2400 "$ALTSERVER_BIN" -u "$DEVICE_UDID" "$SIGN_IPA" 2>&1 \
+  TZ=UTC timeout --foreground 2400 "${command[@]}" 2>&1 \
     | tee "$out"
   rc=${PIPESTATUS[0]}
 else
   ALTSERVER_APPLE_ID="$APPLE_ID" ALTSERVER_APPLE_PASSWORD="$APPLE_PASSWORD" \
-  TZ=UTC timeout 2400 "$ALTSERVER_BIN" -u "$DEVICE_UDID" "$SIGN_IPA" </dev/null 2>&1 \
+  TZ=UTC timeout 2400 "${command[@]}" </dev/null 2>&1 \
     | tee "$out"
   rc=${PIPESTATUS[0]}
 fi
@@ -391,17 +409,35 @@ reported_error="$(grep -E '^(Error:|Exception:)' "$out" | tail -n1 | cut -c1-240
 if (( rc == 0 )) && [[ -n "$reported_error" ]]; then rc=1; fi
 set -e
 
-if (( rc == 0 )) && stamp_success; then
+confirmed=0
+if (( rc == 0 )); then
+  if (( INSTALL )); then
+    if python3 -m sideloop.renewal record "$APP" "$DEVICE" && stamp_success; then confirmed=1; fi
+  elif grep -qx 'Profile renewal succeeded. No app was copied.' "$out"; then
+    confirmed=1
+  fi
+fi
+if (( confirmed )); then
   rm -f "$AUTH_RETRY"
-  msg="refreshed, valid until $(fmt_epoch "$(cat "$EXPIRY")")"
+  msg="profiles renewed without copying the app, valid until $(fmt_epoch "$(cat "$EXPIRY")")"
+  (( INSTALL )) && msg="installed saved IPA, valid until $(fmt_epoch "$(cat "$EXPIRY")")"
   log "OK $msg"; record ok "$msg"
-  prune_profiles
-  heal_siblings
+  (( INSTALL )) && prune_profiles
+  (( INSTALL )) && heal_siblings
   exit 0
 fi
 
 hint=""; result=fail; refused=0
-if grep -q 'com.rileytestut.AltServer (9)' "$out"; then
+if (( rc == 42 )); then
+  if (( INSTALL == 0 )) && python3 -m sideloop.renewal can-reinstall "$APP" "$DEVICE"; then
+    log "profile renewal needs a full re-sign; reinstalling only the exact previously installed IPA"
+    rm -f "$out"
+    exec 9>&-
+    exec "${BASH_SOURCE[0]}" --app "$APP" --device "$DEVICE" --force --install --confirm-replace --repair
+  fi
+  result=repair
+  hint="$(grep '^Renewal requires repair:' "$out" | tail -n1 | cut -c1-240) Use Install / Update to review replacing the app; no IPA was copied"
+elif grep -q 'com.rileytestut.AltServer (9)' "$out"; then
   # iOS allows 3 apps signed with free developer profiles per device, whichever tool installed them.
   result=limit
   hint="$DEVICE_NAME already has the 3 apps iOS allows with free developer profiles ($(blocking_apps)). The limit counts apps from every Apple account, so another account won't help; delete one from the device, then tap Install again"
@@ -444,5 +480,5 @@ if (( refused )) && [[ -n "${SIDELOOP_REFUSED:-}" ]]; then
   printf '%s\t%s\n' "$APPLE_ID" "$hint" >> "$SIDELOOP_REFUSED"
 fi
 record "$result" "AltServer exited $rc${hint:+: $hint}"
-heal_siblings
+(( INSTALL )) && heal_siblings
 exit "$rc"

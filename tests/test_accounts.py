@@ -26,6 +26,10 @@ class AccountTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
+        self.refresh_script = self.root / 'refresh.sh'
+        self.refresh_script.write_text(REFRESH.read_text().replace('python3 -m sideloop.renewal',
+            'python3 "' + str(Path(__file__).with_name('fake_renewal.py')) + '"'))
+        self.refresh_script.chmod(0o755)
         self.old = {k: getattr(config, k) for k in ("DATA", "CONFIG", "APPS", "DEVICES")}
         config.DATA = self.root
         config.CONFIG = self.root / "config.env"
@@ -268,7 +272,7 @@ class AccountTests(unittest.TestCase):
         # The extension's requirement applies only when the extension is installed.
         store.set_keep_extensions(APP, True)
         env = {**self.fake_tools(), "TEST_IOS": "16.7.10"}
-        r = subprocess.run(["bash", str(REFRESH), "--app", APP, "--device", DEVICE, "--force"],
+        r = subprocess.run(["bash", str(self.refresh_script), "--app", APP, "--device", DEVICE, "--force", '--install', '--confirm-replace'],
                            env=env, capture_output=True, text=True, timeout=30)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("needs iOS 17.0 or later, but Test iPhone runs iOS 16.7.10", r.stdout)
@@ -281,7 +285,8 @@ class AccountTests(unittest.TestCase):
         self.assertEqual(store.device_name(DEVICE), "Test iPhone")
 
     def refresh(self, env, *args):
-        return subprocess.run(["bash", str(REFRESH), "--app", APP, "--device", DEVICE, *args],
+        install = ['--install', '--confirm-replace'] if '--force' in args else []
+        return subprocess.run(["bash", str(self.refresh_script), "--app", APP, "--device", DEVICE, *args, *install],
                               env=env, capture_output=True, text=True, timeout=30)
 
     def signed(self):
@@ -358,7 +363,7 @@ class AccountTests(unittest.TestCase):
         # Not installed yet: automatic checks and Re-sign Installed Apps skip it.
         self.assertFalse(Watcher(None, None).due())
         self.assertEqual(self.refresh(env).stdout, "")
-        r = subprocess.run(["bash", str(REFRESH), "--force", "--resign-only"],
+        r = subprocess.run(["bash", str(self.refresh_script), "--force", "--resign-only"],
                            env=env, capture_output=True, text=True, timeout=30)
         self.assertEqual((r.returncode, self.signed()), (0, 0), r.stdout + r.stderr)
         # Tapping Install does install it.
@@ -429,7 +434,7 @@ class AccountTests(unittest.TestCase):
             state.mkdir(parents=True, exist_ok=True)
             (state / "expiry").write_text(str(int(time.time() + 3600)))
         env = {**self.fake_tools(), "TEST_REFUSE": mode}
-        r = subprocess.run(["bash", str(REFRESH)], env=env, capture_output=True, text=True, timeout=60)
+        r = subprocess.run(["bash", str(self.refresh_script)], env=env, capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertEqual((self.root / "refused-attempts").read_text().splitlines(), ["first@example.test"])
         self.assertIn(hint, r.stdout)
@@ -437,7 +442,7 @@ class AccountTests(unittest.TestCase):
         results = {a: store.read_state(accounts.state_folder(a, DEVICE))["last_run"]["result"] for a in (APP, "other.app")}
         self.assertEqual(results, {APP: "fail", "other.app": "fail"})
         # A separate run, e.g. after the user fixed the account, tries again.
-        subprocess.run(["bash", str(REFRESH)], env=env, capture_output=True, text=True, timeout=60)
+        subprocess.run(["bash", str(self.refresh_script)], env=env, capture_output=True, text=True, timeout=60)
         self.assertEqual(len((self.root / "refused-attempts").read_text().splitlines()), 2)
 
     def test_auth_503_pause_persists_but_manual_retry_and_other_accounts_work(self):
@@ -541,7 +546,7 @@ class AccountTests(unittest.TestCase):
                 {"CFBundleIdentifier": APP, "CFBundleExecutable": "Test", "MinimumOSVersion": "17.0"}))
         # The device's version is unknown, so the pre-check can't stop the attempt.
         env = {**self.fake_tools(), "TEST_IOS": "", "TEST_IOS_REJECT": "1"}
-        r = subprocess.run(["bash", str(REFRESH), "--app", APP, "--device", DEVICE, "--force"],
+        r = subprocess.run(["bash", str(self.refresh_script), "--app", APP, "--device", DEVICE, "--force", '--install', '--confirm-replace'],
                            env=env, capture_output=True, text=True, timeout=30)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("iOS refused Test App 1: it needs iOS 17.0 or later, and Test iPhone runs an older version",
@@ -635,9 +640,10 @@ class AccountTests(unittest.TestCase):
 
     def test_refresh_script_signs_and_renews_with_isolated_accounts(self):
         env = self.fake_tools()
-        script = REFRESH
+        script = self.refresh_script
         def run(*args):
-            r = subprocess.run(["bash", str(script), "--app", APP, "--device", DEVICE, *args],
+            install = ['--install', '--confirm-replace'] if '--force' in args else []
+            r = subprocess.run(["bash", str(script), "--app", APP, "--device", DEVICE, *args, *install],
                                env=env, capture_output=True, text=True, timeout=30)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         run("--force")
