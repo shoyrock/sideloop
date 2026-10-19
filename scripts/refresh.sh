@@ -331,7 +331,8 @@ announce() {
     (( SECS_LEFT > 0 )) && left="$(( SECS_LEFT / 86400 ))d $(( SECS_LEFT % 86400 / 3600 ))h left"
     log "signature has ${left} (threshold ${RENEW_BEFORE_DAYS}d)$( (( FORCE )) && echo ", forced run" )"
   else
-    log "no signature on record yet, doing the first install"
+    if (( INSTALL )); then log "no signature on record yet, doing the first install"
+    else log "no signature on record; checking the installed app before renewal"; fi
   fi
 }
 
@@ -342,6 +343,7 @@ if ! device_online; then
     log "${DEVICE_NAME} not reachable (asleep, locked, or off this Wi-Fi); will retry when it's back"
   fi
   record offline "device not reachable"
+  (( FORCE )) && exit 1
   exit 0
 fi
 announce

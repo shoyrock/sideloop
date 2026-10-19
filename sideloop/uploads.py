@@ -1,6 +1,5 @@
 """Each preview owns a separate IPA and is bound to the signed-in session."""
 import hashlib
-import json
 import re
 import secrets
 import time
@@ -19,8 +18,11 @@ def folder():
 def create(session):
     root = folder()
     for path in root.glob('*'):
-        if path.is_file() and path.stat().st_mtime < time.time() - TTL:
-            path.unlink(missing_ok=True)
+        try:
+            if path.is_file() and path.stat().st_mtime < time.time() - TTL:
+                path.unlink(missing_ok=True)
+        except FileNotFoundError:
+            pass  # Another preview request may have claimed or cleaned it up.
     token = secrets.token_hex(24)
     return token, root / (token + '.ipa')
 

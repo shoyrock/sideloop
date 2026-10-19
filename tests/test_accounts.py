@@ -351,6 +351,7 @@ class AccountTests(unittest.TestCase):
         log = (self.root / "state" / "refresh.log").read_text()
         self.assertEqual(log.count("not reachable"), 1)
         self.assertEqual(store.read_state(accounts.state_folder(APP, DEVICE))["last_run"]["result"], "offline")
+        self.assertEqual(self.refresh(env, '--force').returncode, 1)
         r = self.refresh({**env, "TEST_DEVICE": DEVICE})
         self.assertIn("signature has 0d 23h left", r.stdout)
         self.assertEqual(self.signed(), 1)

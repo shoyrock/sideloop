@@ -214,16 +214,18 @@ class Jobs:
 
 
 def run_pty(job, argv, env=None, cwd=None):
-    pid, fd = pty.fork()
-    if pid == 0:
-        try:
-            if cwd is not None:
-                os.chdir(cwd)
-            os.execvpe(argv[0], argv, env if env is not None else os.environ)
-        finally:
-            os._exit(127)
-    job.pid, job.fd = pid, fd
-    status = None
+    # Popen performs the child setup in C. Running Python between fork and exec
+    # in this threaded server can inherit a locked interpreter/library mutex.
+    fd, slave = pty.openpty()
+    try:
+        p = subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave,
+                             env=env, cwd=cwd, start_new_session=True)
+    except BaseException:
+        os.close(fd)
+        raise
+    finally:
+        os.close(slave)
+    job.pid, job.fd = p.pid, fd
     try:
         while True:
             if select.select([fd], [], [], 0.5)[0]:
@@ -236,16 +238,18 @@ def run_pty(job, argv, env=None, cwd=None):
                 job.add(data.decode("utf-8", "replace"))
                 if job.take_error_ack():
                     os.write(fd, b'\n')
-            elif status is None:
-                wp, st = os.waitpid(pid, os.WNOHANG)
-                if wp:
-                    status = st
+            elif p.poll() is not None:
+                break
+    except BaseException:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        raise
     finally:
         job.fd = None
         os.close(fd)
-    if status is None:
-        status = os.waitpid(pid, 0)[1]
-    job.rc = os.waitstatus_to_exitcode(status)
+        job.rc = p.wait()
     if job.partial.strip():
         job.say("")
 
