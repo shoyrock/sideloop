@@ -39,8 +39,8 @@ if mode in ('mfa','wrong','cancel'):
     if code != '123456':
         print('Authentication failed: incorrect verification code (-21669).')
         sys.exit(1)
-if mode == '503':
-    print('Apple authentication HTTP status: 503')
+if mode in ('429', '503'):
+    print('Apple authentication HTTP status: ' + mode)
     print('Authentication failed: Server returned invalid response. (17).')
     sys.exit(1)
 if mode == 'error':
@@ -150,7 +150,7 @@ if mode != 'silent':
         before = config.CONFIG.read_bytes()
         job, _ = self.launch('80046')
         self.assertEqual(job.rc, 1)
-        self.assertIn('-80046', job.view(0)['last'])
+        self.assertEqual(job.view(0)['last'], signing_auth.classify('-80046')[1])
         view = accounts.views()[0]
         self.assertEqual(view['verification']['status'], 'failed')
         self.assertGreater(view['authentication']['retry_at'], time.time())
@@ -159,16 +159,19 @@ if mode != 'silent':
         self.launch()
         self.assertEqual(accounts.views()[0]['authentication'], {})
 
-    def test_http_503_is_visible_and_does_not_request_mfa_or_save(self):
-        job, _ = self.launch('503')
-        self.assertEqual(job.rc, 1)
-        self.assertIn('Apple authentication HTTP status: 503', job.view(0)['lines'])
-        self.assertEqual(job.view(0)['last'], signing_auth.classify('Apple authentication HTTP status: 503')[1])
-        self.assertFalse(job.view()['needs_input'])
-        before = config.CONFIG.read_bytes()
-        saving = self.save_attempt('503', account='default', email='test@example.test')
-        self.assertEqual(saving.view()['last'], signing_auth.classify('Apple authentication HTTP status: 503')[1] + ' Account changes were not saved.')
-        self.assertEqual(config.CONFIG.read_bytes(), before)
+    def test_http_outage_and_rate_limit_are_visible_without_mfa_or_save(self):
+        for code in ('429', '503'):
+            with self.subTest(code=code):
+                job, _ = self.launch(code)
+                status = 'Apple authentication HTTP status: ' + code
+                self.assertEqual(job.rc, 1)
+                self.assertIn(status, job.view(0)['lines'])
+                self.assertEqual(job.view(0)['last'], signing_auth.classify(status)[1])
+                self.assertFalse(job.view()['needs_input'])
+                before = config.CONFIG.read_bytes()
+                saving = self.save_attempt(code, account='default', email='test@example.test')
+                self.assertEqual(saving.view()['last'], signing_auth.classify(status)[1] + ' Account changes were not saved.')
+                self.assertEqual(config.CONFIG.read_bytes(), before)
 
     def test_verified_account_clears_only_its_automatic_retry_pause(self):
         pause = self.root / '.auth-retry-after'

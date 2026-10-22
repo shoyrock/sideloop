@@ -80,6 +80,9 @@ still require testing; adding the verification flow is not proof that Apple's
 existing `-22411` rejection is resolved.
 Source builds for other architectures are described below.
 
+For development, see [code quality and validation](docs/code-quality.md) and
+the repository's [shared agent instructions](AGENTS.md).
+
 Prerequisites
 
 - Docker with Compose

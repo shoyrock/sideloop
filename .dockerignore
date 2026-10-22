@@ -8,3 +8,4 @@ artifacts/
 .venv/
 .ruff_cache/
 output/
+SECURITY-REVIEW.md
