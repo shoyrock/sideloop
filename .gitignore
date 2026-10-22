@@ -4,3 +4,6 @@ data/
 __pycache__/
 artifacts/
 /.local/
+/.venv/
+.ruff_cache/
+/output/

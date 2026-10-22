@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sideloop import accounts, config, verification
+from sideloop import accounts, config, signing_auth, verification
 from sideloop.jobs import Job, run_pty
 from sideloop.server import App
 from sideloop.jobs import Jobs
@@ -46,7 +46,10 @@ if mode == '503':
 if mode == 'error':
     print('Authentication failed: This action cannot be completed at this time (-22411).')
     sys.exit(1)
-if mode == 'signer':
+if mode in ('signer', '80046'):
+    if mode == '80046':
+        print('Authentication failed: This action cannot be completed at this time. (-80046).')
+        sys.exit(1)
     print('Authentication failed: This action cannot be completed at this time. (-80045).')
     sys.exit(1)
 if mode == 'echo':
@@ -129,29 +132,42 @@ if mode != 'silent':
     def test_apple_rejection_explains_trusted_device_requirement(self):
         job, _ = self.launch('error')
         view = job.view(0)
-        self.assertEqual(view['last'], verification.REJECTED_HINT)
+        self.assertEqual(view['last'], signing_auth.classify('-22411')[1])
         self.assertIn('-22411', view['lines'][-2])
         silent, _ = self.launch('silent')
-        self.assertNotIn(verification.REJECTED_HINT, silent.lines)
+        self.assertNotIn(signing_auth.classify('-22411')[1], silent.lines)
         # Saving shows the same guidance as the final summary line.
         saving = self.save_attempt('error')
-        self.assertEqual(saving.view()['last'], verification.REJECTED_HINT + ' Account changes were not saved.')
+        self.assertEqual(saving.view()['last'], signing_auth.classify('-22411')[1] + ' Account changes were not saved.')
 
     def test_signing_service_refusal_is_not_blamed_on_the_apple_id(self):
         job, _ = self.launch('signer')
-        self.assertEqual(job.view(0)['last'], verification.SIGNER_HINT)
+        self.assertEqual(job.view(0)['last'], signing_auth.classify('-80045')[1])
         self.assertIn('-80045', job.view(0)['lines'][-2])
         self.assertEqual(accounts.verification('default')['status'], 'failed')
+
+    def test_80046_updates_account_health_without_changing_credentials_or_app_state(self):
+        before = config.CONFIG.read_bytes()
+        job, _ = self.launch('80046')
+        self.assertEqual(job.rc, 1)
+        self.assertIn('-80046', job.view(0)['last'])
+        view = accounts.views()[0]
+        self.assertEqual(view['verification']['status'], 'failed')
+        self.assertGreater(view['authentication']['retry_at'], time.time())
+        self.assertEqual(config.CONFIG.read_bytes(), before)
+        self.assertFalse((self.root / 'apps').exists())
+        self.launch()
+        self.assertEqual(accounts.views()[0]['authentication'], {})
 
     def test_http_503_is_visible_and_does_not_request_mfa_or_save(self):
         job, _ = self.launch('503')
         self.assertEqual(job.rc, 1)
         self.assertIn('Apple authentication HTTP status: 503', job.view(0)['lines'])
-        self.assertEqual(job.view(0)['last'], verification.SERVICE_HINT)
+        self.assertEqual(job.view(0)['last'], signing_auth.classify('Apple authentication HTTP status: 503')[1])
         self.assertFalse(job.view()['needs_input'])
         before = config.CONFIG.read_bytes()
         saving = self.save_attempt('503', account='default', email='test@example.test')
-        self.assertEqual(saving.view()['last'], verification.SERVICE_HINT + ' Account changes were not saved.')
+        self.assertEqual(saving.view()['last'], signing_auth.classify('Apple authentication HTTP status: 503')[1] + ' Account changes were not saved.')
         self.assertEqual(config.CONFIG.read_bytes(), before)
 
     def test_verified_account_clears_only_its_automatic_retry_pause(self):

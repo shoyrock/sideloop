@@ -4,9 +4,12 @@ set -euo pipefail
 revision="${SOURCE_REVISION:?SOURCE_REVISION is required}"
 image="sideloop:review-${revision:0:12}"
 tests="sideloop:tests-${revision:0:12}"
+quality="sideloop:quality-${revision:0:12}"
 mkdir -p output
-cleanup() { docker image rm "$tests" >/dev/null 2>&1 || true; }
+cleanup() { docker image rm "$tests" "$quality" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
+docker build --platform linux/amd64 -f tools/Dockerfile.quality -t "$quality" . 2>&1 | tee output/quality-build.log
+docker run --rm --network none "$quality" 2>&1 | tee output/quality.log
 docker build --platform linux/amd64 --build-arg BUILD_JOBS=4 \
   --label "org.opencontainers.image.revision=$revision" \
   --label org.opencontainers.image.source=https://github.com/shoyrock/sideloop \

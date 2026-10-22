@@ -1,0 +1,17 @@
+# Development checks only. This image is never part of the shipped application.
+FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 python3-venv nodejs bash ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY requirements-dev.txt /tmp/requirements-dev.txt
+RUN python3 -m venv /opt/quality \
+ && /opt/quality/bin/python -m pip install --disable-pip-version-check --no-cache-dir \
+      --require-hashes --only-binary=:all: -r /tmp/requirements-dev.txt
+ENV PATH="/opt/quality/bin:${PATH}"
+WORKDIR /src
+COPY pyproject.toml ./
+COPY sideloop/ sideloop/
+COPY scripts/ scripts/
+COPY tools/ tools/
+COPY tests/ tests/
+CMD ["python", "tools/check_quality.py"]

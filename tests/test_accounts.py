@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from sideloop import accounts, config, ipa, jobs, store, watcher
+from sideloop import accounts, config, ipa, jobs, signing_auth, store, watcher
 from sideloop.server import App
 from sideloop.watcher import Watcher, configured
 
@@ -420,10 +420,31 @@ class AccountTests(unittest.TestCase):
         self.assertEqual(job.lines, [jobs.LIMIT_ADVICE])
 
     def test_missing_mfa_with_error_line_is_tried_once_per_run(self):
-        self.check_refused_account("mfa", "Apple is asking for a 2FA code")
+        self.check_refused_account("mfa", signing_auth.classify("Enter two factor code")[1])
 
     def test_refused_account_is_tried_once_per_run(self):
-        self.check_refused_account("1", "Apple refused the sign-in from this signing service (-80045)")
+        self.check_refused_account("1", signing_auth.classify("-80045")[1])
+
+    def test_80046_is_tried_once_per_account_and_not_again_on_reconnect(self):
+        self.check_refused_account("80046", signing_auth.classify("-80046")[1])
+        self.assertEqual(accounts.verification('default')['status'], 'failed')
+        self.assertGreater(accounts.views()[0]['authentication']['retry_at'], time.time())
+
+    def test_failed_install_does_not_invent_missing_sibling_profiles(self):
+        other = config.APPS / 'other.app'
+        other.mkdir()
+        config.write_env(other / 'meta.env', {'BUNDLE_ID': 'other.app', 'APP_NAME': 'Other', 'DEVICES': DEVICE})
+        sibling = accounts.state_folder('other.app', DEVICE)
+        sibling.mkdir(parents=True)
+        (sibling / 'expiry').write_text('2000000000')
+        (sibling / 'certificate').write_text('known-certificate')
+        # An empty profile listing is not proof this failed authentication removed one.
+        env = {**self.fake_tools(), 'TEST_REFUSE': '80046'}
+        result = self.refresh(env, '--force')
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual((sibling / 'expiry').read_text(), '2000000000')
+        self.assertEqual((sibling / 'certificate').read_text(), 'known-certificate')
+        self.assertNotIn('lost its provisioning profile', result.stdout)
 
     def check_refused_account(self, mode, hint):
         other = config.APPS / "other.app"
@@ -442,9 +463,9 @@ class AccountTests(unittest.TestCase):
         self.assertIn("skipped: " + hint, r.stdout)
         results = {a: store.read_state(accounts.state_folder(a, DEVICE))["last_run"]["result"] for a in (APP, "other.app")}
         self.assertEqual(results, {APP: "fail", "other.app": "fail"})
-        # A separate run, e.g. after the user fixed the account, tries again.
+        # A separate automatic run respects the account-wide pause, including arrivals.
         subprocess.run(["bash", str(self.refresh_script)], env=env, capture_output=True, text=True, timeout=60)
-        self.assertEqual(len((self.root / "refused-attempts").read_text().splitlines()), 2)
+        self.assertEqual(len((self.root / "refused-attempts").read_text().splitlines()), 1)
 
     def test_auth_503_pause_persists_but_manual_retry_and_other_accounts_work(self):
         self.install_marker(3600)
@@ -460,6 +481,7 @@ class AccountTests(unittest.TestCase):
         self.assertEqual(len(attempts.read_text().splitlines()), 1)
         self.assertEqual(run('--force').returncode, 1)
         self.assertEqual(len(attempts.read_text().splitlines()), 2)
+        (self.root / 'authentication-state.json').unlink()
         pause.write_text(str(int(time.time()) - 1))
         self.assertEqual(run().returncode, 1)
         self.assertEqual(len(attempts.read_text().splitlines()), 3)

@@ -175,32 +175,6 @@ probe_expiry() {
   return $rc
 }
 
-# AltServer removes the provisioning profiles of every sideloaded app on the device before it
-# installs, and puts the others back only when the install succeeds. A run that fails or times
-# out halfway leaves those apps without a profile, so iOS refuses to open them with "Untrusted
-# Developer" even though their signature looks valid here. Check the other apps on the device
-# after every run, and forget the signature of any that lost its profile so it gets reinstalled.
-heal_siblings() {
-  local tmp d s p name bundle cert
-  tmp="$(copy_profiles)" || return 0
-  for d in "$APPS_DIR"/*/; do
-    s="$(python3 -m sideloop.accounts state "$(basename "$d")" "$DEVICE")" || continue
-    [[ "$(basename "$d")" != "$APP" && -r "$s/expiry" && -r "$d/meta.env" ]] || continue
-    IFS=$'\t' read -r bundle name < <(set -a; . "$d/meta.env"; printf '%s\t%s\n' "${BUNDLE_ID:-}" "${APP_NAME:-}")
-    [[ -n "$bundle" ]] || continue
-    cert=""; [[ -r "$s/certificate" ]] && cert="$(cat "$s/certificate")"
-    if p="$(read_profile "$tmp" "$bundle" 0 "$cert")"; then
-      echo "${p%% *}" > "$s/expiry"
-    else
-      # Mark it expired rather than forgetting it, so automatic checks still reinstall it.
-      echo 1 > "$s/expiry"
-      log "WARNING ${name:-$bundle} lost its provisioning profile during this run and won't open;" \
-          "it will be reinstalled on the next run"
-    fi
-  done
-  rm -rf "$tmp"
-}
-
 # Removes provisioning profiles of this Apple ID's team that a newer profile for the same app or
 # extension replaced, on every app of the team. The newest one always stays, so the developer remains trusted.
 prune_profiles() {
@@ -315,14 +289,12 @@ if [[ -n "$refused" ]]; then
   exit 1
 fi
 
-# Persist across watcher/device-arrival batches. Manual installs and renewals can retry now.
-AUTH_RETRY="$SIGNING_WORKDIR/.auth-retry-after"
-if (( FORCE == 0 )) && [[ -r "$AUTH_RETRY" ]]; then
-  retry_after="$(cat "$AUTH_RETRY")"
-  if [[ "$retry_after" =~ ^[0-9]{1,10}$ ]] && (( 10#$retry_after > $(now) )); then
-    log "skipped: Apple authentication HTTP 503; automatic retries paused until $(fmt_epoch "$retry_after")"
-    exit 0
-  fi
+# This account's pause survives restarts and device-arrival batches. Manual
+# operations can retry deliberately; unrelated accounts continue normally.
+retry_after="$(python3 -m sideloop.signing_auth retry-at "$SIGNING_ACCOUNT")"
+if (( FORCE == 0 && retry_after > $(now) )); then
+  log "skipped: Apple authentication is paused for this account until $(fmt_epoch "$retry_after"); verify it in Settings to retry now"
+  exit 0
 fi
 
 announce() {
@@ -420,16 +392,18 @@ if (( rc == 0 )); then
   fi
 fi
 if (( confirmed )); then
-  rm -f "$AUTH_RETRY"
+  python3 -m sideloop.signing_auth clear "$SIGNING_ACCOUNT"
   msg="profiles renewed without copying the app, valid until $(fmt_epoch "$(cat "$EXPIRY")")"
   (( INSTALL )) && msg="installed saved IPA, valid until $(fmt_epoch "$(cat "$EXPIRY")")"
   log "OK $msg"; record ok "$msg"
   (( INSTALL )) && prune_profiles
-  (( INSTALL )) && heal_siblings
   exit 0
 fi
 
 hint=""; result=fail; refused=0
+auth_result="$(python3 -m sideloop.signing_auth failure "$SIGNING_ACCOUNT" "$out")"
+eval "$auth_result"
+unset auth_result
 if (( rc == 42 )); then
   if (( INSTALL == 0 )) && python3 -m sideloop.renewal can-reinstall "$APP" "$DEVICE"; then
     log "profile renewal needs a full re-sign; reinstalling only the exact previously installed IPA"
@@ -443,31 +417,14 @@ elif grep -q 'com.rileytestut.AltServer (9)' "$out"; then
   # iOS allows 3 apps signed with free developer profiles per device, whichever tool installed them.
   result=limit
   hint="$DEVICE_NAME already has the 3 apps iOS allows with free developer profiles ($(blocking_apps)). The limit counts apps from every Apple account, so another account won't help; delete one from the device, then tap Install again"
-elif grep -qx 'Apple authentication HTTP status: 503' "$out"; then
-  hint="Apple authentication service unavailable (HTTP 503); Apple may be refusing this signing service identity. Automatic retries for this account are paused for 30 minutes; verify it in Settings to retry now"
+elif [[ -n "$AUTH_HINT" ]]; then
+  hint="$AUTH_HINT Automatic retries for this account are paused until $(fmt_epoch "$AUTH_RETRY_AT"); verify it in Settings to retry now"
   refused=1
   (( rc == 0 )) && rc=1
-  printf '%s\n' "$(( $(now) + 1800 ))" > "$AUTH_RETRY"
-elif grep -q -- '-22411' "$out"; then
-  hint="Apple could not complete authentication for $APPLE_ID (-22411); verify the account in Settings. This can also indicate a signing-service compatibility problem"
-  refused=1
-elif grep -q -- '-80045' "$out"; then
-  # Apple refuses a client identity that doesn't match the platform that made the Anisette data.
-  hint="Apple refused the sign-in from this signing service (-80045), not $APPLE_ID; update Sideloop to the latest image"
-  refused=1
-elif grep -q -- '-20101' "$out"; then
-  hint="Apple rejected the Apple ID or password of $APPLE_ID (-20101); check them in Settings"
-  refused=1
 elif grep -q 'com.rileytestut.AltServer (10)' "$out"; then
   # AltServer maps iOS's DeviceOSVersionTooLow to "must be running iOS 12.2 or later to install AltStore".
   runs="an older version"; [[ -n "$DEVICE_IOS" ]] && runs="iOS $DEVICE_IOS"
   hint="iOS refused ${APP_NAME:-$APP} ${APP_VERSION:-}: it needs iOS ${MIN_IOS:-a newer version} or later, and $DEVICE_NAME runs $runs"
-elif grep -qiE 'two.?factor code|verification code' "$out" && ! grep -qE 'Got token for|Fetching team' "$out"; then
-  # A missing code may also produce Error:/Exception: or a zero exit status.
-  # Classify it before the generic error so remaining apps do not repeat the sign-in.
-  (( rc == 0 )) && rc=1
-  hint="Apple is asking for a 2FA code for $APPLE_ID; verify the account in Settings"
-  refused=1
 elif [[ -n "$reported_error" ]]; then
   hint="$reported_error"
 elif (( rc == 0 )); then
@@ -482,5 +439,4 @@ if (( refused )) && [[ -n "${SIDELOOP_REFUSED:-}" ]]; then
   printf '%s\t%s\n' "$APPLE_ID" "$hint" >> "$SIDELOOP_REFUSED"
 fi
 record "$result" "AltServer exited $rc${hint:+: $hint}"
-(( INSTALL )) && heal_siblings
 exit "$rc"

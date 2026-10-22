@@ -1,2 +1,4 @@
 altserver/*.patch -text
 *.sh text eol=lf
+# Preserve vendored skill bytes so CLI lock hashes survive checkout on any OS.
+.agents/skills/** -text

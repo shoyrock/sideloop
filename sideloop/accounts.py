@@ -17,7 +17,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import config
+from . import config, signing_auth
 
 ACCOUNT_KEYS = ["APPLE_ID", "APPLE_PASSWORD"]
 ID_RE = re.compile(r"^[a-f0-9]{24}$")
@@ -49,7 +49,7 @@ def ids():
 
 def views():
     return [{"id": i, "email": c["APPLE_ID"], "has_password": bool(c["APPLE_PASSWORD"]),
-             "verification": verification(i)}
+             "verification": verification(i), "authentication": signing_auth.read(runtime_folder(i))}
             for i in ids() for c in [credentials(i)]]
 
 
@@ -70,6 +70,10 @@ def ready(account_id):
         return bool(c["APPLE_ID"] and c["APPLE_PASSWORD"])
     except ValueError:
         return False
+
+
+def runtime_folder(account_id):
+    return config.DATA if account_id == 'default' else _folder(account_id) / 'runtime'
 
 
 def prepare(account_id, email, password=""):
@@ -108,6 +112,7 @@ def save(account_id, email, password=""):
                 config.update({})
         if new or values != old:
             set_verification(account_id, "unverified")
+            signing_auth.clear(runtime_folder(account_id))
         return account_id
 
 
@@ -285,11 +290,8 @@ def shell_context(app_id, udid):
     values = credentials(account_id)
     if not all(values.values()):
         raise ValueError("finish setting up the selected signing account first")
-    if account_id == "default":
-        work, home = config.DATA, config.DATA / ".altserver"
-    else:
-        work = _folder(account_id) / "runtime"
-        home = work / ".altserver"
+    work = runtime_folder(account_id)
+    home = work / '.altserver'
     home.mkdir(parents=True, exist_ok=True)
     values.update(SIGNING_ACCOUNT=account_id, SIGNING_WORKDIR=str(work), SIGNING_HOME=str(home),
                   SIGNING_STATE=str(state_folder(app_id, udid)),

@@ -40,6 +40,8 @@ elif command == "AltServer" and os.environ.get("TEST_REFUSE"):
         print("Apple authentication HTTP status: 503\nError: com.rileytestut.ALTAppleAPI (17).")
     elif os.environ["TEST_REFUSE"] == "17":
         print("Error: com.rileytestut.ALTAppleAPI (17).")
+    elif os.environ["TEST_REFUSE"] == "80046":
+        print("Error: com.rileytestut.AltServer.Localized (-80046).")
     else:
         print("Error: This action cannot be completed at this time. (-80045)")
     sys.exit(1)

@@ -5,3 +5,6 @@ data/
 .git/
 artifacts/
 .local/
+.venv/
+.ruff_cache/
+output/
