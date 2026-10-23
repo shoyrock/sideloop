@@ -83,8 +83,10 @@ def _mux_reachable():
 
 
 def _anisette_up():
+    url = ANISETTE.rstrip('/') + '/health' if os.environ.get('ANISETTE_V3_SERVERS') else ANISETTE
     try:
-        urllib.request.urlopen(ANISETTE, timeout=3).read(64)
+        with urllib.request.urlopen(url, timeout=3) as response:
+            response.read(64)
         return True
     except Exception:
         return False

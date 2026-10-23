@@ -10,8 +10,10 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 import urllib.request
 
+from sideloop import devices
 from sideloop.anisette import Identity, ProviderError, provider_url, serve
 
 
@@ -207,6 +209,11 @@ class AnisetteTests(unittest.TestCase):
         base = 'http://127.0.0.1:' + str(server.server_port)
         with urllib.request.urlopen(base + '/health') as response:
             self.assertEqual(json.load(response), {'status': 'running'})
+        with (
+            patch.object(devices, 'ANISETTE', base),
+            patch.dict(os.environ, {'ANISETTE_V3_SERVERS': PRIMARY}),
+        ):
+            self.assertTrue(devices._anisette_up())
         self.assertEqual(self.transport.requests, [])
         self.transport.down.update([PRIMARY, BACKUP])
         with contextlib.redirect_stderr(io.StringIO()) as log:
