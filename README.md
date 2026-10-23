@@ -12,7 +12,7 @@ A small self-hosted service with a web UI for any Linux machine (amd64 or arm64)
 ## Features
 
 - [x] Multiple apps on multiple iPhones and iPads
-- [x] Multiple saved Apple accounts, with a signer selected per app/device (fork feature)
+- [x] Multiple saved Apple accounts, with one signing account per device for all of its apps (fork feature)
 - [x] Verify saved Apple credentials, with a code prompt only when Apple requests MFA
 - [x] Automatic re-signing when a device comes online, before the signature expires
 - [x] Web UI for pairing, uploading IPAs, 2FA codes and live progress
@@ -80,6 +80,9 @@ still require testing; adding the verification flow is not proof that Apple's
 existing `-22411` rejection is resolved.
 Source builds for other architectures are described below.
 
+For development, see [code quality and validation](docs/code-quality.md) and
+the repository's [shared agent instructions](AGENTS.md).
+
 Prerequisites
 
 - Docker with Compose
@@ -121,6 +124,11 @@ The Compose file creates one container named `sideloop`. Open
 refreshes. The first start downloads Apple's Anisette libraries and initializes
 its identity; the health check allows five minutes for this initialization.
 Internet access is still needed for Apple sign-in and signing.
+
+For persistent private Mac-backed Anisette identity and compatible provider
+failover, see [persistent signing identity](docs/persistent-anisette.md). This
+mode is opt-in through `ANISETTE_V3_SERVERS`; existing deployments keep their
+current backend until configured explicitly.
 
 To run without Compose:
 
@@ -177,12 +185,18 @@ Pair the device in Finder and enable **Show this iPhone when on Wi-Fi**.
 
 - Use the Apple ID's **regular password**. App-specific passwords don't work.
 - A **2FA code** is requested only when Apple requires verification. **Sign In and Save Account** verifies sign-in before saving new credentials. Failed attempts preserve existing accounts. The existing trusted-device code flow is supported; SMS delivery/fallback is not added.
+- **`-22411` "This action cannot be completed at this time"** means Apple refused the Apple ID before asking for a code. It usually happens with an Apple ID that has never been signed in on an Apple device, so it has no trusted device. On the iPhone, add it in **Settings > Apps > Mail > Mail Accounts > Add Account > iCloud**, turn syncing off, then sign in again from Sideloop and approve the prompt on the iPhone. `docker exec Sideloop python3 /usr/local/bin/diagnose-auth.py --verify` prints a shareable report without passwords or tokens.
+- **`-80045` "This action cannot be completed at this time"** came from Apple's October 2026 check that the reported device type matches the Anisette data. It isn't caused by the Apple ID. Update to the latest image; see [account verification](docs/account-verification.md#apple-error--80045).
 - The device must be **unlocked and on the same Wi-Fi** while a re-sign runs.
-- A free account allows 3 apps per device and 10 App IDs per week. Each app extension needs its own App ID.
+- Nothing is installed automatically. New devices start without apps; choose each device's apps in Settings, then tap **Install**. Automatic checks only re-sign apps you installed, starting the configured number of days before they expire. Turn off **Auto re-sign** on an app to let it expire on that device.
+- An IPA must support the device's iOS version. Sideloop compares the app's and its extensions' minimum iOS with each device's last known version. It flags incompatible apps and skips them before contacting Apple. AltServer reports iOS's rejection as "must be running iOS 12.2 or later to install AltStore" (error 10).
+- iOS allows 3 apps with free developer profiles per device, counting every Apple account and sideloading tool. A free account also allows 10 App IDs per week. Each app extension takes a slot and an App ID. Like AltStore and SideStore, Sideloop removes extensions when signing, so each app uses one slot; **Keep app extensions** in Settings turns this off per app. The uploaded IPA isn't modified.
 - Trust the developer once in **Settings > General > VPN & Device Management**. Refreshes keep it trusted.
 - If Apple sign-in stops working, update `ALTSERVER_TAG` in the `Dockerfile`. AltServer is built from that tag with the patches in `altserver/`.
 
 Data is stored in `./data`.
+
+See [Security](docs/security.md) for what protects Sideloop and how to deploy it safely.
 
 ## Author
 

@@ -1,0 +1,4 @@
+# Development only; wheels for Windows amd64 and glibc Linux amd64.
+ruff==0.17.1 \
+    --hash=sha256:a6ef98e51de8ef38082f90653ceeb84944bd7673783eea13e1647c5b9b064189 \
+    --hash=sha256:5df76f16580fab58d0f6c98a3ac254a4abceb7b2489b8b678335869cff77b3d7

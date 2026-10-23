@@ -2,7 +2,8 @@
 
 The default account continues to use config.env and the original certificate cache.
 Additional accounts each have their own credentials, HOME, working directory and
-per-app/device signature state. Changing an account never deletes the old state.
+per-app/device signature state. Each device has one signing account for all of its
+apps. Changing it never deletes the old state.
 """
 
 import json
@@ -10,12 +11,13 @@ import os
 import re
 import secrets
 import shlex
+import shutil
 import sys
 import threading
 import time
 from pathlib import Path
 
-from . import config
+from . import config, signing_auth
 
 ACCOUNT_KEYS = ["APPLE_ID", "APPLE_PASSWORD"]
 ID_RE = re.compile(r"^[a-f0-9]{24}$")
@@ -47,8 +49,15 @@ def ids():
 
 def views():
     return [{"id": i, "email": c["APPLE_ID"], "has_password": bool(c["APPLE_PASSWORD"]),
-             "verification": verification(i)}
+             "verification": verification(i), "authentication": signing_auth.read(runtime_folder(i))}
             for i in ids() for c in [credentials(i)]]
+
+
+def label(account_id):
+    try:
+        return credentials(account_id)["APPLE_ID"] or account_id
+    except ValueError:
+        return account_id
 
 
 def passwords():
@@ -61,6 +70,10 @@ def ready(account_id):
         return bool(c["APPLE_ID"] and c["APPLE_PASSWORD"])
     except ValueError:
         return False
+
+
+def runtime_folder(account_id):
+    return config.DATA if account_id == 'default' else _folder(account_id) / 'runtime'
 
 
 def prepare(account_id, email, password=""):
@@ -99,15 +112,40 @@ def save(account_id, email, password=""):
                 config.update({})
         if new or values != old:
             set_verification(account_id, "unverified")
+            signing_auth.clear(runtime_folder(account_id))
         return account_id
 
 
 def verification(account_id):
+    return _verification_data().get(account_id, {"status": "unverified"})
+
+
+def _verification_data():
+    with _lock:
+        return _read_verification_data()
+
+
+def _read_verification_data():
     path = config.DATA / 'account-verification.json'
     try:
-        return json.loads(path.read_text()).get(account_id, {"status": "unverified"})
+        data = json.loads(path.read_text())
+        if not isinstance(data, dict) or any(not isinstance(v, dict) or
+                v.get('status') not in ('unverified', 'checking', 'verified', 'failed') or
+                ('checked_at' in v and (type(v['checked_at']) is not int or v['checked_at'] < 0))
+                for v in data.values()):
+            raise ValueError('invalid verification status')
+        return data
     except FileNotFoundError:
-        return {"status": "unverified"}
+        return {}
+    except (ValueError, UnicodeError):
+        # Status is only a cache. Preserve the damaged copy for inspection; never
+        # touch credentials or signing data when recovering from a damaged cache.
+        with _lock:
+            try:
+                path.replace(path.with_name(path.name + '.invalid-' + secrets.token_hex(6)))
+            except FileNotFoundError:
+                pass
+        return {}
 
 
 def set_verification(account_id, status):
@@ -115,7 +153,7 @@ def set_verification(account_id, status):
     with _lock:
         credentials(account_id)
         path = config.DATA / 'account-verification.json'
-        data = json.loads(path.read_text()) if path.exists() else {}
+        data = _verification_data()
         data[account_id] = {"status": status, "checked_at": int(time.time())}
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix('.tmp')
@@ -140,12 +178,15 @@ def _assignments():
     path = config.DATA / "signing-accounts.json"
     try:
         data = json.loads(path.read_text())
-    except (FileNotFoundError, ValueError):
+    except FileNotFoundError:
+        return {"version": 2, "devices": {}, "apps": {}}
+    except ValueError:
         data = {}
     if not isinstance(data, dict):
         data = {}
     devices, apps = data.get("devices"), data.get("apps")
-    return {"devices": {k: v for k, v in devices.items() if isinstance(v, str)} if isinstance(devices, dict) else {},
+    return {"version": data.get("version") if data.get("version") == 2 else None,
+            "devices": {k: v for k, v in devices.items() if isinstance(v, str)} if isinstance(devices, dict) else {},
             "apps": {k: v for k, v in apps.items() if isinstance(v, dict)} if isinstance(apps, dict) else {}}
 
 
@@ -159,16 +200,39 @@ def _write_assignments(data):
     os.replace(tmp, path)
 
 
-def forget(app_id=None, udid=None):
-    """Remove assignments when the corresponding app or device is removed."""
+def migrate(targets):
+    """Convert per-app signers to one signer per device; returns targets whose signer changed.
+
+    targets maps each device to the apps assigned to it. An explicit device choice
+    wins; otherwise the account most of the device's apps already use is kept.
+    """
     with _lock:
         data = _assignments()
-        if app_id is not None:
-            data["apps"].pop(app_id, None)
-        if udid is not None:
-            data["devices"].pop(udid, None)
-            for targets in data["apps"].values():
-                targets.pop(udid, None)
+        if data.get("version") == 2:
+            return []
+        devices, apps = data.get("devices", {}), data.get("apps", {})
+        changed = []
+        for udid, app_ids in targets.items():
+            used = {a: apps.get(a, {}).get(udid) or devices.get(udid, "default") for a in app_ids}
+            if udid not in devices and used:
+                counts = [(list(used.values()).count(u), u) for u in dict.fromkeys(used.values())]
+                devices[udid] = max(counts, key=lambda c: c[0])[1]
+            if devices.get(udid, "default") != "default" and not ready(devices[udid]):
+                devices.pop(udid)
+            chosen = devices.get(udid, "default")
+            if chosen == "default":
+                devices.pop(udid, None)
+            changed += [(a, udid, old, chosen) for a, old in used.items() if old != chosen]
+        # An empty "apps" section keeps the file readable by builds that predate per-device accounts.
+        _write_assignments({"version": 2, "devices": devices, "apps": {}})
+        return changed
+
+
+def forget(udid):
+    """Remove a device's assignment when the device is removed."""
+    with _lock:
+        data = _assignments()
+        data["devices"].pop(udid, None)
         _write_assignments(data)
 
 
@@ -176,13 +240,9 @@ def device_account(udid):
     return _assignments()["devices"].get(udid, "default")
 
 
-def app_override(app_id, udid):
-    return _assignments()["apps"].get(app_id, {}).get(udid, "")
-
-
 def resolve(app_id, udid):
-    data = _assignments()
-    return data["apps"].get(app_id, {}).get(udid) or data["devices"].get(udid, "default")
+    # Every app on a device is signed by that device's account.
+    return device_account(udid)
 
 
 def state_folder(app_id, udid):
@@ -191,23 +251,38 @@ def state_folder(app_id, udid):
     return base if account_id == "default" else base / "accounts" / _folder(account_id).name
 
 
-def assign(udid, account_id, app_id=None):
-    if account_id and not ready(account_id):
+def assign(udid, account_id):
+    if not ready(account_id):
         raise ValueError("finish setting up that signing account first")
     with _lock:
         data = _assignments()
-        target = data["devices"] if app_id is None else data["apps"].setdefault(app_id, {})
-        if account_id:
-            target[udid] = account_id
+        if account_id == "default":
+            data["devices"].pop(udid, None)
         else:
-            target.pop(udid, None)
+            data["devices"][udid] = account_id
         _write_assignments(data)
 
 
-def pin(app_id, udid):
-    """Keep an existing target's signer when the device default is later changed."""
-    if not app_override(app_id, udid) and ready(resolve(app_id, udid)):
-        assign(udid, resolve(app_id, udid), app_id)
+def remove(account_id):
+    """Delete an additional account and its certificate cache once no device uses it."""
+    if account_id == "default":
+        raise ValueError("the default account can't be removed")
+    with _lock:
+        folder = _folder(account_id)
+        if not (folder / "credentials.env").is_file():
+            raise ValueError("no such signing account")
+        if account_id in _assignments()["devices"].values():
+            raise ValueError("switch the devices that use this account to another account first")
+        shutil.rmtree(folder)
+        path = config.DATA / 'account-verification.json'
+        if path.exists():
+            data = json.loads(path.read_text())
+            if data.pop(account_id, None) is not None:
+                tmp = path.with_suffix('.tmp')
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, 'w') as f:
+                    json.dump(data, f)
+                os.replace(tmp, path)
 
 
 def shell_context(app_id, udid):
@@ -215,12 +290,8 @@ def shell_context(app_id, udid):
     values = credentials(account_id)
     if not all(values.values()):
         raise ValueError("finish setting up the selected signing account first")
-    pin(app_id, udid)
-    if account_id == "default":
-        work, home = config.DATA, config.DATA / ".altserver"
-    else:
-        work = _folder(account_id) / "runtime"
-        home = work / ".altserver"
+    work = runtime_folder(account_id)
+    home = work / '.altserver'
     home.mkdir(parents=True, exist_ok=True)
     values.update(SIGNING_ACCOUNT=account_id, SIGNING_WORKDIR=str(work), SIGNING_HOME=str(home),
                   SIGNING_STATE=str(state_folder(app_id, udid)),

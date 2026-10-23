@@ -1,0 +1,138 @@
+diff --git a/src/AnisetteDataManager.cpp b/src/AnisetteDataManager.cpp
+--- a/src/AnisetteDataManager.cpp
++++ b/src/AnisetteDataManager.cpp
+@@ -57,24 +57,27 @@
+ 	return U("https://armconverter.com/anisette/irGb3Quww8zrhgqnzmrx");
+ }
+ 
+-// Apple rejects any gsa.apple.com request whose X-Mme-Client-Info (aka
+-// "client info" / device description) header contains the substring
+-// "com.apple.dt.Xcode" with a 503. Replace every occurrence with
+-// "com.apple.akd" so no AnisetteData built from this manager ever leaks
+-// that string to Apple, regardless of what the anisette server returns.
++// Follow SideInstaller's October 2026 client policy: preserve a backend's own
++// identity, but replace the old stock Mac/Android identities Apple now refuses.
++// This is a compatibility fallback, not a conversion of the underlying ADI data.
+ std::string SanitizeClientInfo(const std::string& clientInfo)
+ {
+-	static const std::string needle = "com.apple.dt.Xcode";
+-	static const std::string replacement = "com.apple.akd";
+-
+-	std::string result = clientInfo;
++	static const std::string windows = "<PC> <Windows;6.2(0,0);9200> <com.apple.AuthKit/1 (com.apple.iTunes/12.12.4.1)>";
++	const auto first = clientInfo.find_first_not_of(" \t\r\n");
++	if (first == std::string::npos) return windows;
++	std::string result = clientInfo.substr(first, clientInfo.find_last_not_of(" \t\r\n") - first + 1);
++	if (result.find("<MacBookPro13,2> <macOS;13.1;22C65>") == 0 ||
++		result.find("<MacBookPro15,1> <Mac OS X;10.15.2;19C57>") == 0 ||
++		result.find("<Android;") != std::string::npos) return windows;
++
++	// Keep the upstream Xcode sanitization for otherwise supported identities.
++	const std::string needle = "com.apple.dt.Xcode", replacement = "com.apple.akd";
+ 	size_t pos = 0;
+ 	while ((pos = result.find(needle, pos)) != std::string::npos)
+ 	{
+ 		result.replace(pos, needle.length(), replacement);
+ 		pos += replacement.length();
+ 	}
+-
+ 	return result;
+ }
+ 
+diff --git a/upstream_repo/AltSign/AppleAPI+Authentication.cpp b/upstream_repo/AltSign/AppleAPI+Authentication.cpp
+index 059a69b..2c0cae5 100755
+--- a/upstream_repo/AltSign/AppleAPI+Authentication.cpp
++++ b/upstream_repo/AltSign/AppleAPI+Authentication.cpp
+@@ -552,6 +552,7 @@ pplx::task<std::pair<std::shared_ptr<Account>, std::shared_ptr<AppleAPISession>>
+ 				}
+ 
+ 				bool isTwoFactorEnabled = false;
++				bool codeAlreadySent = false;
+ 
+ 				auto authTypeNode = plist_dict_get_item(statusDictionary, "au");
+ 				if (authTypeNode != nullptr)
+@@ -559,11 +560,24 @@ pplx::task<std::pair<std::shared_ptr<Account>, std::shared_ptr<AppleAPISession>>
+ 					char* authType = nullptr;
+ 					plist_get_string_val(authTypeNode, &authType);
+ 
+-					if (std::string(authType) == "trustedDeviceSecondaryAuth")
++					if (authType != nullptr && std::string(authType) == "trustedDeviceSecondaryAuth")
+ 					{
+ 						isTwoFactorEnabled = true;
+ 					}
+ 				}
++				else
++				{
++					// Since 2026-10 GrandSlam can answer hsc 409 without "au": it has
++					// already pushed a code to the trusted devices, so only validate it.
++					auto hscNode = plist_dict_get_item(statusDictionary, "hsc");
++					uint64_t hsc = 0;
++					if (hscNode != nullptr && plist_get_node_type(hscNode) == PLIST_UINT)
++					{
++						plist_get_uint_val(hscNode, &hsc);
++					}
++
++					codeAlreadySent = isTwoFactorEnabled = hsc == 409;
++				}
+ 
+ 				if (isTwoFactorEnabled)
+ 				{
+@@ -571,7 +585,7 @@ pplx::task<std::pair<std::shared_ptr<Account>, std::shared_ptr<AppleAPISession>>
+ 
+ 					if (verificationHandler.has_value())
+ 					{
+-						return this->RequestTwoFactorCode(adsid, idmsToken, anisetteData, *verificationHandler)
++						return this->RequestTwoFactorCode(adsid, idmsToken, anisetteData, *verificationHandler, codeAlreadySent)
+ 						.then([=](bool success) {
+ 							return this->Authenticate(appleID, password, anisetteData, std::nullopt);
+ 						});
+@@ -741,7 +755,8 @@ pplx::task<bool> AppleAPI::RequestTwoFactorCode(
+ 	std::string dsid,
+ 	std::string idmsToken,
+ 	std::shared_ptr<AnisetteData> anisetteData,
+-	const std::function <pplx::task<std::optional<std::string>>(void)>& verificationHandler)
++	const std::function <pplx::task<std::optional<std::string>>(void)>& verificationHandler,
++	bool codeAlreadySent)
+ {
+ 	std::wstring url = L"/auth/verify/trusteddevice";
+ 	auto encodedURI = web::uri::encode_uri(url);
+@@ -795,7 +810,13 @@ pplx::task<bool> AppleAPI::RequestTwoFactorCode(
+ 		request.headers().add(pair.first, pair.second);
+ 	}
+ 
+-	auto task = this->gsaClient().request(request)
++	// Apple answers the pages under /auth with a bare 403 for an Android client, before it reads
++	// who is asking, so the code is requested as a Mac. Validating it works as either.
++	request.headers().remove(L"X-Mme-Client-Info");
++	request.headers().add(L"X-Mme-Client-Info", L"<Mac15,7> <macOS;27.0;26A5378j> <com.apple.AuthKit/1 (com.apple.akd/1.0)>");
++
++	// A code Apple already pushed must not be requested again: that would send another.
++	auto codeTask = codeAlreadySent ? verificationHandler() : this->gsaClient().request(request)
+ 		.then([=](http_response response)
+ 			{
+ 				return response.content_ready();
+@@ -808,7 +829,9 @@ pplx::task<bool> AppleAPI::RequestTwoFactorCode(
+ 				.then([=](std::vector<unsigned char> decompressedData)
+ 					{
+ 						return verificationHandler();
+-					})
++					});
++
++	auto task = codeTask
+ 				.then([this, headers](std::optional<std::string> verificationCode) {
+ 						if (!verificationCode.has_value())
+ 						{
+diff --git a/upstream_repo/AltSign/AppleAPI.hpp b/upstream_repo/AltSign/AppleAPI.hpp
+index 4db9db2..1ed9d69 100755
+--- a/upstream_repo/AltSign/AppleAPI.hpp
++++ b/upstream_repo/AltSign/AppleAPI.hpp
+@@ -105,7 +105,8 @@ private:
+ 		std::string dsid,
+ 		std::string idmsToken,
+ 		std::shared_ptr<AnisetteData> anisetteData,
+-		const std::function <pplx::task<std::optional<std::string>>(void)>& verificationHandler);
++		const std::function <pplx::task<std::optional<std::string>>(void)>& verificationHandler,
++		bool codeAlreadySent = false);
+ 
+ 	template<typename T>
+ 	T ProcessAnyResponse(plist_t plist, std::string errorCodeKey, std::vector<std::string> errorMessageKeys, std::function<T(plist_t)> parseHandler, std::function<std::optional<APIError>(int64_t)> resultCodeHandler)

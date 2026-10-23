@@ -19,8 +19,38 @@ attempt and is not a permanent Apple session or a guarantee of installation.
 The existing engine requests codes from trusted Apple devices. This change does
 not add SMS delivery or bypass Apple's authentication requirements. If Apple
 rejects sign-in before issuing an MFA challenge, the code field does not appear;
-the failed status and Details show the error. The live server's existing `-22411`
-rejection is not proven resolved by this UI/entrypoint change.
+the failed status and Details show the error.
+
+## Apple error -22411
+
+Apple returns `-22411` when it cannot complete authentication. It is not a
+unique diagnosis of an account that has never been used on an Apple device:
+an unsupported MFA response can also cause a later token request to fail with
+this code. Complete any verification Apple requests and inspect the signing
+service's compatibility before changing account or device settings.
+
+## Apple error -80045
+
+Since October 12, 2026, Apple returns `-80045` ("This action cannot be completed
+at this time") when the client identity a sign-in reports doesn't match the
+platform that produced its Anisette data. The bundled Anisette server produces
+that data with Apple's Android library but reports a Mac. Sideloop's signing
+engine therefore reports an Android device. With the Mac identity, Apple answered
+`-80045` for every Apple ID; with the Android identity, a nonexistent Apple ID
+receives the normal `-20101`. The error is not caused by the Apple ID. If it
+appears, the image predates the fix. Apple can also now answer the password step
+with a code already sent to the trusted devices; the code field then appears
+without a second code being requested.
+
+During a re-sign run, an account that Apple refuses (`-80045`, `-22411`, `-20101`
+or a required code) is tried once. The run skips its other apps. Automatic
+checks then wait 30 minutes, 1, 2, then 4 hours between runs while apps stay due.
+A device coming back online or a change of signing account still checks at once.
+
+`docker exec Sideloop python3 /usr/local/bin/diagnose-auth.py` reports Anisette
+fields, timestamp age and the clock offset from Apple. Add `--verify` to make one
+sign-in attempt with the saved default account. The report contains only status
+codes and fixed messages, not credentials or tokens.
 
 One-time codes are validated as six digits, sent to the waiting process, and
 redacted from job output. They are not stored in account files or verification

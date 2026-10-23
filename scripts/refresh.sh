@@ -12,11 +12,17 @@ ALTSERVER_BIN="${ALTSERVER_BIN:-/usr/local/bin/AltServer}"
 set -a; . "$CONFIG"; set +a
 : "${RENEW_BEFORE_DAYS:=2}"
 : "${ANISETTE_SERVER:=http://127.0.0.1:6969}"
+[[ -z "${ANISETTE_V3_SERVERS:-}" ]] || ANISETTE_SERVER=http://127.0.0.1:6969
 
-FORCE=0; RECHECK=0; APP=""; DEVICE=""
+FORCE=0; RECHECK=0; RESIGN_ONLY=0; INSTALL=0; CONFIRM_REPLACE=0; REPAIR=0; APP=""; DEVICE=""
 while (( $# )); do
   case "$1" in
     --force) FORCE=1 ;;
+    --install) INSTALL=1 ;;
+    --confirm-replace) CONFIRM_REPLACE=1 ;;
+    --repair) REPAIR=1 ;;
+    # With --force for several apps: re-sign installed apps, don't install the rest.
+    --resign-only) RESIGN_ONLY=1 ;;
     --recheck) RECHECK=1 ;;
     --app) APP="${2:?--app needs an id}"; shift ;;
     --device) DEVICE="${2:?--device needs a udid}"; shift ;;
@@ -26,6 +32,11 @@ done
 
 if [[ -z "$APP" || -z "$DEVICE" ]]; then
   rc=0; n=0
+  # Apple refusing an account fails every app it signs; each account is tried once per run.
+  if [[ -z "${SIDELOOP_REFUSED:-}" ]]; then
+    SIDELOOP_REFUSED="$(mktemp)"; export SIDELOOP_REFUSED
+    trap 'rm -f "$SIDELOOP_REFUSED"' EXIT
+  fi
   for d in "$APPS_DIR"/*/; do
     [[ -r "$d/meta.env" && -r "$d/app.ipa" ]] || continue
     id="$(basename "$d")"
@@ -36,7 +47,10 @@ if [[ -z "$APP" || -z "$DEVICE" ]]; then
       n=$((n+1))
       args=(--app "$id" --device "$u")
       (( FORCE )) && args+=(--force)
+      (( RESIGN_ONLY )) && args+=(--resign-only)
       (( RECHECK )) && args+=(--recheck)
+      (( INSTALL )) && args+=(--install)
+      (( CONFIRM_REPLACE )) && args+=(--confirm-replace)
       "${BASH_SOURCE[0]}" "${args[@]}" || rc=$?
     done
   done
@@ -162,31 +176,6 @@ probe_expiry() {
   return $rc
 }
 
-# AltServer removes the provisioning profiles of every sideloaded app on the device before it
-# installs, and puts the others back only when the install succeeds. A run that fails or times
-# out halfway leaves those apps without a profile, so iOS refuses to open them with "Untrusted
-# Developer" even though their signature looks valid here. Check the other apps on the device
-# after every run, and forget the signature of any that lost its profile so it gets reinstalled.
-heal_siblings() {
-  local tmp d s p name bundle cert
-  tmp="$(copy_profiles)" || return 0
-  for d in "$APPS_DIR"/*/; do
-    s="$(python3 -m sideloop.accounts state "$(basename "$d")" "$DEVICE")" || continue
-    [[ "$(basename "$d")" != "$APP" && -r "$s/expiry" && -r "$d/meta.env" ]] || continue
-    IFS=$'\t' read -r bundle name < <(set -a; . "$d/meta.env"; printf '%s\t%s\n' "${BUNDLE_ID:-}" "${APP_NAME:-}")
-    [[ -n "$bundle" ]] || continue
-    cert=""; [[ -r "$s/certificate" ]] && cert="$(cat "$s/certificate")"
-    if p="$(read_profile "$tmp" "$bundle" 0 "$cert")"; then
-      echo "${p%% *}" > "$s/expiry"
-    else
-      rm -f "$s/expiry"
-      log "WARNING ${name:-$bundle} lost its provisioning profile during this run and won't open;" \
-          "it will be reinstalled on the next run"
-    fi
-  done
-  rm -rf "$tmp"
-}
-
 # Removes provisioning profiles of this Apple ID's team that a newer profile for the same app or
 # extension replaced, on every app of the team. The newest one always stays, so the developer remains trusted.
 prune_profiles() {
@@ -246,75 +235,209 @@ stamp_success() {
   echo 0 > "$FAILS"
 }
 
-days_left() { [[ -r "$EXPIRY" ]] && echo $(( ( $(cat "$EXPIRY") - $(now) ) / 86400 )) || echo -999; }
+# Names the apps iOS listed as filling the free-profile slots, e.g. "TEAM.com.example.app.TEAM".
+blocking_apps() {
+  python3 - "$out" "$APPS_DIR" <<'PY'
+import pathlib, re, shlex, sys
+text = pathlib.Path(sys.argv[1]).read_text(errors="replace")
+m = re.search(r"\{\((.*?)\)\}", text, re.S)
+names = {}
+for meta in pathlib.Path(sys.argv[2]).glob("*/meta.env"):
+    values = dict(shlex.split(line)[0].split("=", 1) for line in meta.read_text().splitlines() if "=" in line)
+    names[values.get("BUNDLE_ID", "")] = values.get("APP_NAME") or values.get("BUNDLE_ID", "")
+apps = []
+for app_id in re.findall(r'"([^"]+)"', m.group(1) if m else ""):
+    team, _, bundle = app_id.partition(".")
+    bundle = re.sub(r"\." + re.escape(team) + r"$", "", bundle)
+    apps.append(names.get(bundle, bundle))
+print(", ".join(apps) or "apps installed by Sideloop or another tool")
+PY
+}
+# Escapes text for use as a sed s/// replacement.
+sed_escape() { printf '%s' "$1" | tr -d '\n' | sed -e 's/[\/&\\]/\\&/g'; }
+stored_ios() { python3 -c 'import sys; from sideloop import store; print(store.device_ios(sys.argv[1]))' "$DEVICE" 2>/dev/null || true; }
 read_fails() { local n=0; [[ -r "$FAILS" ]] && n="$(tr -cd '0-9' < "$FAILS")"; echo "${n:-0}"; }
 
 if (( RECHECK )); then
   device_online || { echo "${TAG}${DEVICE_NAME} not reachable; unlock it and try again"; exit 1; }
-  p="$(probe_expiry)" || { rm -f "$EXPIRY"; log "not installed on this device"; exit 0; }
-  save_probe "$p"
-  log "rechecked on the device: signature valid until $(fmt_epoch "$(cat "$EXPIRY")")"
+  python3 -m sideloop.renewal check "$APP" "$DEVICE" || exit $?
+  if [[ -r "$EXPIRY" ]]; then
+    log "rechecked on the device: signature valid until $(fmt_epoch "$(cat "$EXPIRY")")"
+  else
+    log "not installed on this device"
+  fi
   exit 0
 fi
 
-LEFT="$(days_left)"
-(( FORCE == 0 && LEFT > RENEW_BEFORE_DAYS )) && exit 0
+# Compare in seconds: whole days rounded down renewed up to a day before the configured window.
+SECS_LEFT=-1; [[ -r "$EXPIRY" ]] && SECS_LEFT=$(( $(cat "$EXPIRY") - $(now) ))
+(( FORCE == 0 && SECS_LEFT > RENEW_BEFORE_DAYS * 86400 )) && exit 0
 
-if [[ -r "$EXPIRY" ]]; then
-  log "signature has ${LEFT}d left (threshold ${RENEW_BEFORE_DAYS}d)$( (( FORCE )) && echo ", forced run" )"
-else
-  log "no signature on record yet, doing the first install"
+if (( FORCE == 0 )); then
+  # Automatic checks only renew apps the user installed and left on auto re-sign; installing
+  # an app on a device is always the user's choice.
+  [[ -r "$EXPIRY" ]] || exit 0
+  [[ " ${MANUAL_APPS:-} " == *" $APP "* ]] && exit 0
 fi
+(( RESIGN_ONLY )) && [[ ! -r "$EXPIRY" ]] && exit 0
+
+# Another app of this run already found the account refused; the same sign-in would fail again.
+refused=""
+[[ -n "${SIDELOOP_REFUSED:-}" ]] && refused="$(awk -F '\t' -v id="$APPLE_ID" '$1 == id { print $2; exit }' "$SIDELOOP_REFUSED" 2>/dev/null)"
+if [[ -n "$refused" ]]; then
+  log "skipped: $refused"
+  record fail "skipped: $refused"
+  exit 1
+fi
+
+# This account's pause survives restarts and device-arrival batches. Manual
+# operations can retry deliberately; unrelated accounts continue normally.
+retry_after="$(python3 -m sideloop.signing_auth retry-at "$SIGNING_ACCOUNT")"
+if (( FORCE == 0 && retry_after > $(now) )); then
+  log "skipped: Apple authentication is paused for this account until $(fmt_epoch "$retry_after"); verify it in Settings to retry now"
+  exit 0
+fi
+
+announce() {
+  if [[ -r "$EXPIRY" ]]; then
+    local left="expired"
+    (( SECS_LEFT > 0 )) && left="$(( SECS_LEFT / 86400 ))d $(( SECS_LEFT % 86400 / 3600 ))h left"
+    log "signature has ${left} (threshold ${RENEW_BEFORE_DAYS}d)$( (( FORCE )) && echo ", forced run" )"
+  else
+    if (( INSTALL )); then log "no signature on record yet, doing the first install"
+    else log "no signature on record; checking the installed app before renewal"; fi
+  fi
+}
 
 if ! device_online; then
-  log "${DEVICE_NAME} not reachable (asleep, locked, or off this Wi-Fi); will retry next run"
+  # Log once per absence; automatic checks repeat every 30 minutes while an app is due.
+  if (( FORCE )) || [[ "$(cut -f2 "$APP_STATE/last_run" 2>/dev/null)" != offline ]]; then
+    announce
+    log "${DEVICE_NAME} not reachable (asleep, locked, or off this Wi-Fi); will retry when it's back"
+  fi
   record offline "device not reachable"
+  (( FORCE )) && exit 1
   exit 0
 fi
+announce
 
+if (( INSTALL )); then
+guard_args=(); (( CONFIRM_REPLACE )) && guard_args+=(--confirmed)
+(( REPAIR )) && guard_args+=(--repair)
+if ! python3 -m sideloop.renewal guard "$APP" "$DEVICE" "${guard_args[@]}"; then
+  record repair "could not confirm safe replacement; check the device and use Install / Update"
+  exit 1
+fi
 [[ -r "$IPA_PATH" ]] || { log "ERROR IPA missing: $IPA_PATH"; record fail "IPA missing"; exit 1; }
 
+# iOS rejects an app whose minimum version is newer than the device's only after it was signed
+# and copied, and AltServer reports that as an AltStore message. Check first, without contacting Apple.
+f="$(conn_flag)" && DEVICE_IOS="$(timeout 15 ideviceinfo ${f:+"$f"} -u "$DEVICE_UDID" -k ProductVersion 2>/dev/null)" || DEVICE_IOS=""
+# Wi-Fi lockdown reads fail intermittently; fall back to the version from the last scan.
+[[ "$DEVICE_IOS" =~ ^[0-9] ]] || DEVICE_IOS="$(stored_ios)"
+MIN_IOS="$(python3 -m sideloop.ipa "$APP_DIR")" || MIN_IOS=""
+# Both end up in messages and a sed replacement; the IPA's Info.plist is untrusted input.
+[[ "$MIN_IOS" =~ ^[0-9]+(\.[0-9]+)*$ ]] || MIN_IOS=""
+[[ "$DEVICE_IOS" =~ ^[0-9]+(\.[0-9]+)*$ ]] || DEVICE_IOS=""
+# Remembered so the UI can show the requirement while the device is away.
+[[ -n "$DEVICE_IOS" ]] && python3 -c 'import sys; from sideloop import store; store.set_device_ios(*sys.argv[1:])' \
+  "$DEVICE" "$DEVICE_IOS" 2>/dev/null || true
+needs="$(python3 -m sideloop.ipa "$APP_DIR" "$DEVICE_IOS")" && too_old=0 || too_old=$?
+if (( too_old == 3 )); then
+  msg="${APP_NAME:-$APP} ${APP_VERSION:-} needs iOS $needs or later, but $DEVICE_NAME runs iOS $DEVICE_IOS; add a version of the IPA that supports iOS $DEVICE_IOS or update the device"
+  n=$(( $(read_fails) + 1 )); echo "$n" > "$FAILS"
+  log "SKIP $msg"; record fail "$msg"
+  exit 1
+fi
+
+# Signs a copy without app extensions unless the app keeps them, so it uses one slot and one App ID.
+SIGN_IPA="$(python3 -m sideloop.ipa --signing-copy "$APP_DIR")" || { log "ERROR could not prepare the IPA"; record fail "could not prepare the IPA"; exit 1; }
+[[ "$SIGN_IPA" != "$IPA_PATH" ]] && log "removed the app's extensions so it uses one of the device's 3 app slots (keep them in Settings)"
 log "signing and installing $(basename "$IPA_PATH") on $DEVICE_UDID"
+command=("$ALTSERVER_BIN" -u "$DEVICE_UDID" "$SIGN_IPA")
+else
+log "renewing installed profiles on $DEVICE_NAME; no app transfer"
+command=(python3 -m sideloop.renewal renew "$APP" "$DEVICE")
+MIN_IOS=""; DEVICE_IOS=""
+fi
 out="$(mktemp)"
 trap 'rm -f "$STATE_DIR/.running" "$out"' EXIT
 set +e
 if [[ -t 0 && -t 1 ]]; then
-  TZ=UTC timeout --foreground 2400 "$ALTSERVER_BIN" -u "$DEVICE_UDID" -a "$APPLE_ID" -p "$APPLE_PASSWORD" "$IPA_PATH" 2>&1 \
+  ALTSERVER_APPLE_ID="$APPLE_ID" ALTSERVER_APPLE_PASSWORD="$APPLE_PASSWORD" \
+  TZ=UTC timeout --foreground 2400 "${command[@]}" 2>&1 \
     | tee "$out"
   rc=${PIPESTATUS[0]}
 else
-  TZ=UTC timeout 2400 "$ALTSERVER_BIN" -u "$DEVICE_UDID" -a "$APPLE_ID" -p "$APPLE_PASSWORD" "$IPA_PATH" </dev/null 2>&1 \
+  ALTSERVER_APPLE_ID="$APPLE_ID" ALTSERVER_APPLE_PASSWORD="$APPLE_PASSWORD" \
+  TZ=UTC timeout 2400 "${command[@]}" </dev/null 2>&1 \
     | tee "$out"
   rc=${PIPESTATUS[0]}
 fi
-tr '\r' '\n' < "$out" | grep -vE "$NOISE" | cut -c1-400 >> "$LOG_FILE"
+# AltServer words every iOS version rejection as AltStore's own 12.2 requirement; state the app's.
+REQUIREMENT="This app needs iOS ${MIN_IOS:-a newer version} or later${DEVICE_IOS:+; the device runs iOS $DEVICE_IOS}."
+tr '\r' '\n' < "$out" | grep -vE "$NOISE" | cut -c1-400 \
+  | sed -e "s/Your device must be running iOS 12\.2 or later to install AltStore\./$(sed_escape "$REQUIREMENT")/" \
+        -e "s/^Please deactivate a sideloaded app with AltStore.*/$(sed_escape "$(python3 -c 'from sideloop import jobs; print(jobs.LIMIT_ADVICE)')")/" \
+  >> "$LOG_FILE"
 reported_error="$(grep -E '^(Error:|Exception:)' "$out" | tail -n1 | cut -c1-240)"
 if (( rc == 0 )) && [[ -n "$reported_error" ]]; then rc=1; fi
 set -e
 
-if (( rc == 0 )) && stamp_success; then
-  msg="refreshed, valid until $(fmt_epoch "$(cat "$EXPIRY")")"
+confirmed=0
+if (( rc == 0 )); then
+  if (( INSTALL )); then
+    if python3 -m sideloop.renewal record "$APP" "$DEVICE" && stamp_success; then confirmed=1; fi
+  elif grep -qx 'Profile renewal succeeded. No app was copied.' "$out"; then
+    confirmed=1
+  fi
+fi
+if (( confirmed )); then
+  python3 -m sideloop.signing_auth clear "$SIGNING_ACCOUNT"
+  msg="profiles renewed without copying the app, valid until $(fmt_epoch "$(cat "$EXPIRY")")"
+  (( INSTALL )) && msg="installed saved IPA, valid until $(fmt_epoch "$(cat "$EXPIRY")")"
   log "OK $msg"; record ok "$msg"
-  prune_profiles
-  heal_siblings
+  (( INSTALL )) && prune_profiles
   exit 0
 fi
 
-hint=""
-if grep -q -- '-22411' "$out"; then
-  hint="Apple rejected sign-in (-22411); the app was not signed or installed"
+hint=""; result=fail; refused=0
+auth_result="$(python3 -m sideloop.signing_auth failure "$SIGNING_ACCOUNT" "$out")"
+eval "$auth_result"
+unset auth_result
+if (( rc == 42 )); then
+  if (( INSTALL == 0 )) && python3 -m sideloop.renewal can-reinstall "$APP" "$DEVICE"; then
+    log "profile renewal needs a full re-sign; reinstalling only the exact previously installed IPA"
+    rm -f "$out"
+    exec 9>&-
+    exec "${BASH_SOURCE[0]}" --app "$APP" --device "$DEVICE" --force --install --confirm-replace --repair
+  fi
+  result=repair
+  hint="$(grep '^Renewal requires repair:' "$out" | tail -n1 | cut -c1-240) Use Install / Update to review replacing the app; no IPA was copied"
+elif grep -q 'com.rileytestut.AltServer (9)' "$out"; then
+  # iOS allows 3 apps signed with free developer profiles per device, whichever tool installed them.
+  result=limit
+  hint="$DEVICE_NAME already has the 3 apps iOS allows with free developer profiles ($(blocking_apps)). The limit counts apps from every Apple account, so another account won't help; delete one from the device, then tap Install again"
+elif [[ -n "$AUTH_HINT" ]]; then
+  hint="$AUTH_HINT Automatic retries for this account are paused until $(fmt_epoch "$AUTH_RETRY_AT"); verify it in Settings to retry now"
+  refused=1
+  (( rc == 0 )) && rc=1
+elif grep -q 'com.rileytestut.AltServer (10)' "$out"; then
+  # AltServer maps iOS's DeviceOSVersionTooLow to "must be running iOS 12.2 or later to install AltStore".
+  runs="an older version"; [[ -n "$DEVICE_IOS" ]] && runs="iOS $DEVICE_IOS"
+  hint="iOS refused ${APP_NAME:-$APP} ${APP_VERSION:-}: it needs iOS ${MIN_IOS:-a newer version} or later, and $DEVICE_NAME runs $runs"
 elif [[ -n "$reported_error" ]]; then
   hint="$reported_error"
 elif (( rc == 0 )); then
   rc=1
   hint="AltServer finished, but the app isn't on the device (did it lock or leave Wi-Fi mid-copy?)"
-elif grep -qiE 'two.?factor code|verification code' "$out"; then
-  hint="Apple is asking for a 2FA code; sign it from the web UI once"
 elif (( rc == 124 )); then
   hint="AltServer timed out"
 fi
 n=$(( $(read_fails) + 1 )); echo "$n" > "$FAILS"
 log "FAIL AltServer exited $rc (consecutive failures: $n)${hint:+ - $hint}"
-record fail "AltServer exited $rc${hint:+: $hint}"
-heal_siblings
+if (( refused )) && [[ -n "${SIDELOOP_REFUSED:-}" ]]; then
+  printf '%s\t%s\n' "$APPLE_ID" "$hint" >> "$SIDELOOP_REFUSED"
+fi
+record "$result" "AltServer exited $rc${hint:+: $hint}"
 exit "$rc"

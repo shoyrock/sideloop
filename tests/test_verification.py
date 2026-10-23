@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sideloop import accounts, config, verification
+from sideloop import accounts, config, signing_auth, verification
 from sideloop.jobs import Job, run_pty
 from sideloop.server import App
 from sideloop.jobs import Jobs
@@ -39,8 +39,18 @@ if mode in ('mfa','wrong','cancel'):
     if code != '123456':
         print('Authentication failed: incorrect verification code (-21669).')
         sys.exit(1)
+if mode in ('429', '503'):
+    print('Apple authentication HTTP status: ' + mode)
+    print('Authentication failed: Server returned invalid response. (17).')
+    sys.exit(1)
 if mode == 'error':
     print('Authentication failed: This action cannot be completed at this time (-22411).')
+    sys.exit(1)
+if mode in ('signer', '80046'):
+    if mode == '80046':
+        print('Authentication failed: This action cannot be completed at this time. (-80046).')
+        sys.exit(1)
+    print('Authentication failed: This action cannot be completed at this time. (-80045).')
     sys.exit(1)
 if mode == 'echo':
     print('Authentication failed: ' + os.environ['ALTSERVER_APPLE_PASSWORD'])
@@ -118,6 +128,65 @@ if mode != 'silent':
             job, _ = self.launch(mode)
             self.assertNotEqual(job.rc, 0)
             self.assertEqual(accounts.verification('default')['status'], 'failed')
+
+    def test_apple_rejection_explains_trusted_device_requirement(self):
+        job, _ = self.launch('error')
+        view = job.view(0)
+        self.assertEqual(view['last'], signing_auth.classify('-22411')[1])
+        self.assertIn('-22411', view['lines'][-2])
+        silent, _ = self.launch('silent')
+        self.assertNotIn(signing_auth.classify('-22411')[1], silent.lines)
+        # Saving shows the same guidance as the final summary line.
+        saving = self.save_attempt('error')
+        self.assertEqual(saving.view()['last'], signing_auth.classify('-22411')[1] + ' Account changes were not saved.')
+
+    def test_signing_service_refusal_is_not_blamed_on_the_apple_id(self):
+        job, _ = self.launch('signer')
+        self.assertEqual(job.view(0)['last'], signing_auth.classify('-80045')[1])
+        self.assertIn('-80045', job.view(0)['lines'][-2])
+        self.assertEqual(accounts.verification('default')['status'], 'failed')
+
+    def test_80046_updates_account_health_without_changing_credentials_or_app_state(self):
+        before = config.CONFIG.read_bytes()
+        job, _ = self.launch('80046')
+        self.assertEqual(job.rc, 1)
+        self.assertEqual(job.view(0)['last'], signing_auth.classify('-80046')[1])
+        view = accounts.views()[0]
+        self.assertEqual(view['verification']['status'], 'failed')
+        self.assertGreater(view['authentication']['retry_at'], time.time())
+        self.assertEqual(config.CONFIG.read_bytes(), before)
+        self.assertFalse((self.root / 'apps').exists())
+        self.launch()
+        self.assertEqual(accounts.views()[0]['authentication'], {})
+
+    def test_http_outage_and_rate_limit_are_visible_without_mfa_or_save(self):
+        for code in ('429', '503'):
+            with self.subTest(code=code):
+                job, _ = self.launch(code)
+                status = 'Apple authentication HTTP status: ' + code
+                self.assertEqual(job.rc, 1)
+                self.assertIn(status, job.view(0)['lines'])
+                self.assertEqual(job.view(0)['last'], signing_auth.classify(status)[1])
+                self.assertFalse(job.view()['needs_input'])
+                before = config.CONFIG.read_bytes()
+                saving = self.save_attempt(code, account='default', email='test@example.test')
+                self.assertEqual(saving.view()['last'], signing_auth.classify(status)[1] + ' Account changes were not saved.')
+                self.assertEqual(config.CONFIG.read_bytes(), before)
+
+    def test_verified_account_clears_only_its_automatic_retry_pause(self):
+        pause = self.root / '.auth-retry-after'
+        pause.write_text('2000000000')
+        other = accounts.save('new', 'other@example.test', 'synthetic-password')
+        other_pause = accounts._folder(other) / 'runtime' / '.auth-retry-after'
+        other_pause.parent.mkdir(parents=True, exist_ok=True)
+        other_pause.write_text('2000000000')
+        self.launch('503')
+        self.assertTrue(pause.exists())
+        self.launch()
+        self.assertFalse(pause.exists())
+        self.assertTrue(other_pause.exists())
+        self.save_attempt(account=other, email='other@example.test')
+        self.assertFalse(other_pause.exists())
 
     def test_cancelled_verification_does_not_mark_verified(self):
         job, worker = self.launch('cancel')

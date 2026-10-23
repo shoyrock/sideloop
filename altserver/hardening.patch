@@ -1,0 +1,50 @@
+diff --git a/src/AltServerMain.cpp b/src/AltServerMain.cpp
+index 60aabc3..8b5ba85 100644
+--- a/src/AltServerMain.cpp
++++ b/src/AltServerMain.cpp
+@@ -160,6 +160,10 @@ int main(int argc, char *argv[]) {
+ 		printf("No argument supplied, if you want for help, please use -h or --help\n");
+ 	}
+ 
++	// Sideloop passes credentials in the environment: arguments are visible in the process list.
++	if (!appleID) appleID = getenv("ALTSERVER_APPLE_ID");
++	if (!password) password = getenv("ALTSERVER_APPLE_PASSWORD");
++
+ 	bool installApp = true;
+ 	if (verifyAccount) {
+ 		if (!appleID) appleID = getenv("ALTSERVER_APPLE_ID");
+diff --git a/upstream_repo/AltSign/AppleAPI.cpp b/upstream_repo/AltSign/AppleAPI.cpp
+index 331404d..6e89664 100755
+--- a/upstream_repo/AltSign/AppleAPI.cpp
++++ b/upstream_repo/AltSign/AppleAPI.cpp
+@@ -1022,8 +1022,9 @@ web::http::client::http_client AppleAPI::gsaClient()
+ 	// reusing the cached _gsaClient member. (This vendored cpprestsdk has no
+ 	// http_client_config::set_keep_alive(), so a fresh client/connection per
+ 	// call is how we avoid connection reuse here.)
++	// gsa.apple.com chains to Apple Root CA, which the image adds to the system trust store.
+ 	http_client_config config;
+-	config.set_validate_certificates(false);
++	config.set_validate_certificates(true);
+ 
+ 	return web::http::client::http_client(U("https://gsa.apple.com"), config);
+ }
+diff --git a/upstream_repo/AltSign/Archiver.cpp b/upstream_repo/AltSign/Archiver.cpp
+index 1693220..b25f362 100755
+--- a/upstream_repo/AltSign/Archiver.cpp
++++ b/upstream_repo/AltSign/Archiver.cpp
+@@ -121,6 +121,15 @@ void UnzipArchive(std::string archivePath, std::string outputDirectory)
+ 			continue;
+ 		}
+ 
++		// Reject members that would be written outside outputDirectory.
++		fs::path memberPath(filename);
++		if (filename.empty() || memberPath.is_absolute() || filename[0] == '\\' ||
++			std::any_of(memberPath.begin(), memberPath.end(), [](const fs::path& part) { return part == ".."; }))
++		{
++			finish();
++			throw ArchiveError(ArchiveErrorCode::CorruptFile);
++		}
++
+ 		std::replace(filename.begin(), filename.end(), '/', ALTDirectoryDeliminator);
+ 		filename = replace_all(filename, ":", "__colon__");
+ 

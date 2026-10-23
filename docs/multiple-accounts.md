@@ -1,8 +1,8 @@
 # Multiple signing accounts
 
-This fork can save several Apple accounts, select a default for new apps on each
-device, and select a signing account for each app/device target. Automatic renewal
-uses that target's saved account. Re-sign Early and account dropdowns also use
+This fork can save several Apple accounts and select one signing account per
+device. That account signs every IPA on the device, including apps added later.
+Refresh and automatic renewal use it. Re-sign Early and account dropdowns also use
 readable foreground and background colours in light and dark modes.
 
 Multiple accounts do not bypass iOS's limit of three active apps installed with
@@ -14,17 +14,20 @@ extensions also consume App IDs.
 1. In Settings, open Apple Accounts. Your existing credentials are the default
    account. Choose Add another account to save an additional Apple ID and its
    regular password. Leaving a saved account's password blank retains it.
-2. On a device, choose Account for new apps. Existing apps retain their previous
-   account; newly uploaded or newly assigned apps use the device's new default.
-3. On an app's device row, choose its Signing account. Each device can use a
-   different account for the same IPA. Refresh and automatic renewal use this
-   selection. Account changes are blocked while a signing job is running.
+2. On a device, choose its Signing account. After you confirm, all of the
+   device's apps are re-signed with that account at the next automatic check,
+   about 30 seconds later when the device is reachable. Different devices can use
+   different accounts. Account changes are blocked while a signing job is running.
+3. To delete an additional account, select it under Apple Accounts and choose
+   Remove Account twice. A device still using it must be switched first. Removal
+   deletes its credentials and certificate cache.
 
-Changing a target's signing account does not move its app data. AltServer derives
-the installed bundle identifier from the signing team, so signing with another
-team can install a separate copy. Use the original account to renew an existing
-installation and retain its data. Apple may request a 2FA code for each account,
-and the device may require trusting each developer.
+Switching a device's account does not move app data. AltServer derives the
+installed bundle identifier from the signing team, so the new account installs
+separate copies. Delete the old copies on the device; they stop opening when
+their signature expires. Keep the original account to renew existing installations
+and retain their data. Apple may request a 2FA code for each account, and the
+device may require trusting each developer.
 
 The email of an existing saved account is retained with its signing cache. To
 use another Apple ID, add another account instead of replacing that email.
@@ -33,7 +36,12 @@ use another Apple ID, add another account instead of replacing that email.
 
 The default account retains `config.env`, `/data/.altserver`,
 `/data/AltServerData`, and the original app/device signature state paths. Existing
-app and device metadata formats are unchanged. There is no migration on startup.
+app and device metadata formats are unchanged.
+
+Earlier builds of this fork stored a signer per app. On first start, those
+selections are converted once to one account per device. A device's explicit
+choice is kept. A device without one adopts the account most of its apps used.
+Each app that moves to a different signer is noted in the Activity history.
 
 Additional data lives in:
 
@@ -42,12 +50,12 @@ Additional data lives in:
 | Account credentials | `accounts/<account-id>/credentials.env` |
 | Account working directory and certificate cache | `accounts/<account-id>/runtime/` |
 | Account HOME | `accounts/<account-id>/runtime/.altserver/` |
-| Device defaults and app/device selections | `signing-accounts.json` |
+| Device signing accounts | `signing-accounts.json` |
 | Additional account's signature state | `apps/<app>/state/<device>/accounts/<account-id>/` |
 
 Credentials stay server-side; API state contains account emails and password
-presence, and job output masks all saved account passwords. Removing an app or
-device clears its assignments without deleting saved accounts.
+presence, and job output masks all saved account passwords. Removing a device
+clears its assignment without deleting saved accounts.
 
 Back up the full appdata directory before testing an update. The old image does
 not understand multiple-account assignments and would use its default account
@@ -113,10 +121,11 @@ docker run --rm --entrypoint python3 -e PYTHONPATH=/opt \
 python tests/smoke_container.py sideloop:multi-account-candidate
 ```
 
-The eleven regression tests cover legacy state/cache preservation, independent
-account state, assignment changes, renewal scheduling, shell quoting, credential
-masking, busy-job guards, removal, and the actual refresh script using fake signing
-and device tools. Container checks cover both services, process recovery,
+The regression tests cover legacy state/cache preservation, independent account
+state, per-device assignment of every app, migration of per-app signers, prompt
+re-signing after a switch, account removal, renewal scheduling, shell quoting,
+credential masking, busy-job guards, and the actual refresh script using fake
+signing and device tools. Container checks cover both services, process recovery,
 graceful shutdown, and persistent accounts and selections after recreation.
 
 Browser checks use disposable accounts and a simulated app/device, with automatic
