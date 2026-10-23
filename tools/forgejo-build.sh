@@ -21,6 +21,7 @@ docker run --rm --network none --entrypoint python3 "$tests" \
 docker run --rm --network none --add-host gsa.apple.com:127.0.0.1 \
   --entrypoint python3 "$tests" /tests/check_native_verification.py 2>&1 | tee output/native.log
 SIDELOOP_SMOKE_IN_CONTAINER=1 python3 tests/smoke_container.py "$image" 2>&1 | tee output/smoke.log
+python3 tests/smoke_anisette_v3.py "$image" 2>&1 | tee output/v3-smoke.log
 docker image inspect "$image" > output/image-inspect.json
 docker save "$image" | gzip -1 > output/sideloop-amd64.tar.gz
 sha256sum output/sideloop-amd64.tar.gz > output/SHA256SUMS

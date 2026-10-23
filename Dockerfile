@@ -33,7 +33,7 @@ ARG NETMUXD_TAG=v0.4.3
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       libimobiledevice-utils usbmuxd openssl python3 curl ca-certificates coreutils tzdata \
-      libplist-2.0-4 supervisor tini \
+      libplist-2.0-4 supervisor tini python3-websocket \
  && rm -rf /var/lib/apt/lists/*
 
 # Release archives are verified against checksums recorded for NETMUXD_TAG.

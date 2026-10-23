@@ -125,6 +125,11 @@ refreshes. The first start downloads Apple's Anisette libraries and initializes
 its identity; the health check allows five minutes for this initialization.
 Internet access is still needed for Apple sign-in and signing.
 
+For persistent private Mac-backed Anisette identity and compatible provider
+failover, see [persistent signing identity](docs/persistent-anisette.md). This
+mode is opt-in through `ANISETTE_V3_SERVERS`; existing deployments keep their
+current backend until configured explicitly.
+
 To run without Compose:
 
 ```bash
