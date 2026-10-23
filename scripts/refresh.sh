@@ -12,6 +12,7 @@ ALTSERVER_BIN="${ALTSERVER_BIN:-/usr/local/bin/AltServer}"
 set -a; . "$CONFIG"; set +a
 : "${RENEW_BEFORE_DAYS:=2}"
 : "${ANISETTE_SERVER:=http://127.0.0.1:6969}"
+[[ -z "${ANISETTE_V3_SERVERS:-}" ]] || ANISETTE_SERVER=http://127.0.0.1:6969
 
 FORCE=0; RECHECK=0; RESIGN_ONLY=0; INSTALL=0; CONFIRM_REPLACE=0; REPAIR=0; APP=""; DEVICE=""
 while (( $# )); do

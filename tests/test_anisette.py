@@ -2,8 +2,11 @@ import base64
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import plistlib
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -96,6 +99,19 @@ class ProviderFixture:
 
 
 class AnisetteTests(unittest.TestCase):
+    def test_exec_diagnostics_use_v3_despite_legacy_container_environment(self):
+        result = subprocess.check_output(
+            [sys.executable, '-c', 'from sideloop.config import ANISETTE; print(ANISETTE)'],
+            env={
+                **os.environ,
+                'ANISETTE_SERVER': 'https://legacy.example',
+                'ANISETTE_V3_SERVERS': PRIMARY,
+            },
+            text=True,
+            timeout=10,
+        )
+        self.assertEqual(result.strip(), 'http://127.0.0.1:6969')
+
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
         self.addCleanup(self.folder.cleanup)
