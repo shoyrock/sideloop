@@ -6,6 +6,10 @@ import urllib.request
 def main():
     port = int(os.environ.get("UI_PORT", "8080"))
     anisette = os.environ.get("ANISETTE_SERVER", "http://127.0.0.1:6969")
+    if os.environ.get('ANISETTE_V3_SERVERS'):
+        # Provider outages must not make Docker restart a healthy local service,
+        # or consume one-time passwords on every health probe.
+        anisette = 'http://127.0.0.1:6969/health'
     for url in (f"http://127.0.0.1:{port}/api/health", anisette):
         with urllib.request.urlopen(url, timeout=4) as response:
             response.read(64)

@@ -20,12 +20,27 @@ SECRET = re.compile(r"^(Data|Value) ?: |^X-(Apple|Mme|MMe)-|^(MachineID|One-Time
                     r"^Received (auth )?response|^Signing: ")
 PROGRESS = re.compile(r"^(Signing|Installation) Progress:\s*([0-9.eE+-]+)")
 NOISE = re.compile(r"^Writing File: ")
-APP_START = re.compile(r"\[(.+?)\] (?:signing and installing|no signature on record|signature has)")
+APP_START = re.compile(r"\[(.+?)\] (?:signing and installing|renewing installed profiles|no signature on record|signature has)")
 MAX_LINE = 400
-VERIFY_PUBLIC = re.compile(r'^(?:Enter two factor code$|Requires two factor\.\.\.$|'
-                          r'Authentication failed:|Account authentication succeeded\.$|'
-                          r'Signing in to Apple to verify|Account verification (?:cancelled|timed out)|'
-                          r'Apple sign-in was not verified)')
+# AltServer reports every DeviceOSVersionTooLow rejection with AltStore's own requirement.
+# refresh.sh's failure line names the app's actual minimum.
+ALTSTORE_IOS = "Your device must be running iOS 12.2 or later to install AltStore."
+IOS_TOO_OLD = "iOS refused the app: the device's iOS version is older than the app requires."
+# AltServer's advice for iOS's 3-app limit points to AltStore and a pre-iOS 16 Settings path.
+ALTSTORE_LIMIT = "Please deactivate a sideloaded app with AltStore"
+LIMIT_ADVICE = ("Delete one of these apps from the device, then install again. Offloaded apps still count, "
+                "so turn off Offload Unused Apps in Settings > App Store.")
+VERIFY_PUBLIC = re.compile(
+    r'^(?:Enter two factor code$|Requires two factor\.\.\.$|'
+    r'Apple authentication HTTP status: [0-9]{3}$|Apple authentication service unavailable|'
+    r'Apple authentication is unavailable or rate limited \(HTTP (?:429|503)\)\.|'
+    r'Apple refused authentication \(-8004[56]\)\.|'
+    r'Apple locked this account for security reasons \(-20209\)\.|'
+    r'Apple account authentication (?:failed\.$|did not complete\.)|'
+    r'Authentication failed:|Account authentication succeeded\.$|'
+    r'Signing in to Apple to verify|Account verification (?:cancelled|timed out)|'
+    r'Apple sign-in was not verified|Apple refused (?:this Apple ID|the sign-in))'
+)
 
 
 def hidden(line):
@@ -34,7 +49,14 @@ def hidden(line):
 
 def redact(lines):
     passwords = accounts.passwords()
-    return [mask(ln, passwords) for ln in lines if not hidden(ln)]
+    return [friendly(mask(ln, passwords)) for ln in lines if not hidden(ln)]
+
+
+def friendly(line):
+    """Replace AltServer messages written for AltStore users."""
+    if line.lstrip().startswith(ALTSTORE_LIMIT):
+        return LIMIT_ADVICE
+    return line.replace(ALTSTORE_IOS, IOS_TOO_OLD)
 
 
 def mask(text, passwords):
@@ -65,7 +87,7 @@ class Job:
             buf = (self.partial + text).replace("\r\n", "\n").replace("\r", "\n")
             *done, self.partial = buf.split("\n")
             for line in done:
-                line = mask(line, self.secrets)
+                line = friendly(mask(line, self.secrets))
                 t = line.strip()
                 if not t:
                     continue
@@ -101,7 +123,9 @@ class Job:
             self.stage, self.fraction = "send", 0.0
         elif line.startswith(("Installed profile", "Notify: Installation")):
             self.stage, self.fraction = "install", 1.0
-        elif "signing and installing" in line:
+        elif line.startswith(('Renewing installed app profiles', 'Fetching renewal profiles', 'Installing renewal profiles')):
+            self.stage, self.fraction = 'renew', 0.5
+        elif "signing and installing" in line or "renewing installed profiles" in line:
             if m := APP_START.search(line):
                 self.app = m.group(1)
             self.stage, self.fraction = "signin", 0.0
@@ -196,16 +220,18 @@ class Jobs:
 
 
 def run_pty(job, argv, env=None, cwd=None):
-    pid, fd = pty.fork()
-    if pid == 0:
-        try:
-            if cwd is not None:
-                os.chdir(cwd)
-            os.execvpe(argv[0], argv, env if env is not None else os.environ)
-        finally:
-            os._exit(127)
-    job.pid, job.fd = pid, fd
-    status = None
+    # Popen performs the child setup in C. Running Python between fork and exec
+    # in this threaded server can inherit a locked interpreter/library mutex.
+    fd, slave = pty.openpty()
+    try:
+        p = subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave,
+                             env=env, cwd=cwd, start_new_session=True)
+    except BaseException:
+        os.close(fd)
+        raise
+    finally:
+        os.close(slave)
+    job.pid, job.fd = p.pid, fd
     try:
         while True:
             if select.select([fd], [], [], 0.5)[0]:
@@ -218,16 +244,18 @@ def run_pty(job, argv, env=None, cwd=None):
                 job.add(data.decode("utf-8", "replace"))
                 if job.take_error_ack():
                     os.write(fd, b'\n')
-            elif status is None:
-                wp, st = os.waitpid(pid, os.WNOHANG)
-                if wp:
-                    status = st
+            elif p.poll() is not None:
+                break
+    except BaseException:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        raise
     finally:
         job.fd = None
         os.close(fd)
-    if status is None:
-        status = os.waitpid(pid, 0)[1]
-    job.rc = os.waitstatus_to_exitcode(status)
+        job.rc = p.wait()
     if job.partial.strip():
         job.say("")
 
@@ -236,11 +264,35 @@ def run_capture(job, argv, timeout=None):
     p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                          start_new_session=True)
     job.pid = p.pid
-    deadline = time.time() + timeout if timeout else None
-    for chunk in iter(lambda: p.stdout.read1(4096), b""):
-        job.add(chunk.decode("utf-8", "replace"))
-        if deadline and time.time() > deadline:
+    deadline = time.monotonic() + timeout if timeout is not None else None
+    output_open = True
+    try:
+        while True:
+            if job.cancelled or (deadline is not None and time.monotonic() >= deadline):
+                try:
+                    os.killpg(p.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                job.say('✗ cancelled' if job.cancelled else '✗ timed out')
+                job.rc = 130 if job.cancelled else 124
+                break
+            wait = min(0.2, max(0, deadline - time.monotonic())) if deadline is not None else 0.2
+            if not output_open and p.poll() is not None:
+                break
+            if select.select([p.stdout] if output_open else [], [], [], wait)[0]:
+                chunk = os.read(p.stdout.fileno(), 4096)
+                if not chunk:
+                    output_open = False
+                else:
+                    job.add(chunk.decode('utf-8', 'replace'))
+    except BaseException:
+        try:
             os.killpg(p.pid, signal.SIGKILL)
-            job.say("✗ timed out")
-            break
-    job.rc = p.wait()
+        except ProcessLookupError:
+            pass
+        raise
+    finally:
+        p.stdout.close()
+        rc = p.wait()
+        if job.rc is None:
+            job.rc = rc

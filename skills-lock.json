@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "skills": {
+    "clean-code": {
+      "source": "ciembor/agent-rules-books",
+      "ref": "893a88a6fce3a80c565bf39ac65021b43a8b2990",
+      "sourceType": "github",
+      "skillPath": "clean-code/SKILL.md",
+      "computedHash": "eb3a646d4c3ab8ef33dafe2ddb0978eaf1f6613a06e8ebd5a1ce1ab85826c4e3"
+    },
+    "refactoring": {
+      "source": "ciembor/agent-rules-books",
+      "ref": "893a88a6fce3a80c565bf39ac65021b43a8b2990",
+      "sourceType": "github",
+      "skillPath": "refactoring/SKILL.md",
+      "computedHash": "670b52574be2041152611ece9fd717fe5c95873926f92ca9375ccd317ee4e7c2"
+    },
+    "unslop": {
+      "source": "boudra/unslop",
+      "ref": "662ece848dcadf94c4dd0b7d59bbab4ad1fb3950",
+      "sourceType": "github",
+      "skillPath": "skills/unslop/SKILL.md",
+      "computedHash": "dbec228463708c16186f8b50146c418785dac3e4c38b1195112809037654c76f"
+    }
+  }
+}

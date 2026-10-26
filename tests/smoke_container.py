@@ -6,6 +6,7 @@ Requires Docker and an unused loopback port 18080. Test data is disposable.
 
 import hashlib
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -20,6 +21,7 @@ IMAGE = sys.argv[1] if len(sys.argv) > 1 else "sideloop:all-in-one"
 NAME = f"sideloop-smoke-{uuid.uuid4().hex[:8]}"
 VOLUME = f"{NAME}-data"
 BASE = "http://127.0.0.1:18080"
+IN_CONTAINER = os.environ.get("SIDELOOP_SMOKE_IN_CONTAINER") == "1"
 
 
 def docker(*args):
@@ -70,6 +72,13 @@ def request(path, data=None, cookie=None):
         headers["Cookie"] = cookie
     if data is not None:
         headers["Content-Type"] = "application/json"
+    if IN_CONTAINER:
+        # A container-based runner's loopback is not the Docker host's loopback.
+        code = ("import json,sys,urllib.request; p,d,h=json.loads(sys.argv[1]); "
+                "r=urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8080'+p, "
+                "json.dumps(d).encode() if d is not None else None,h),timeout=10); "
+                "print(json.dumps([json.load(r),dict(r.headers)]))")
+        return json.loads(inside("python3", "-c", code, json.dumps([path, data, headers])))
     req = urllib.request.Request(
         BASE + path,
         json.dumps(data).encode() if data is not None else None,
@@ -92,8 +101,8 @@ def main():
     created = False
     try:
         docker(
-            "run", "-d", "--name", NAME, "--privileged", "--stop-timeout", "45",
-            "-p", "127.0.0.1:18080:8080",
+            "run", "-d", "--name", NAME, "--stop-timeout", "45",
+            *([] if IN_CONTAINER else ["-p", "127.0.0.1:18080:8080"]),
             "--mount", f"type=volume,source={VOLUME},target=/data", IMAGE,
         )
         created = True
@@ -106,7 +115,11 @@ def main():
         process_code = "from pathlib import Path; print('\\n'.join(p.read_bytes().replace(bytes([0]),b' ').decode(errors='replace') for p in Path('/proc').glob('[0-9]*/cmdline') if p.exists()))"
         processes = inside("python3", "-c", process_code)
         check("usbmuxd -f" in processes and "netmuxd --host" in processes, "USB and Wi-Fi service processes start")
-        anisette_pid = supervisor_pid("anisette")
+        # Supervisor runs Anisette through a log filter; find the server process itself.
+        anisette_code = ("from pathlib import Path; print(next(p.parent.name for p in Path('/proc').glob('[0-9]*/cmdline') "
+                         "if p.read_bytes().startswith(b'/usr/local/bin/anisette-v3-server')))")
+        anisette_pid = inside("python3", "-c", anisette_code)
+        supervised_pid = supervisor_pid("anisette")
         owner = inside("python3", "-c", f"import os,pwd; print(pwd.getpwuid(os.stat('/proc/{anisette_pid}').st_uid).pw_name)")
         check(owner == "Alcoholic", "Anisette retains its upstream service account")
 
@@ -154,10 +167,7 @@ def main():
         inside("python3", "-c", fixture)
         request("/api/account/assign", {"device": device, "account": second}, cookie)
         state, _ = request("/api/state", cookie=cookie)
-        check(state["apps"][0]["targets"][0]["account"] == "default", "changing device default preserves existing app signer")
-        request("/api/account/assign", {"device": device, "app": "smoke.app", "account": second}, cookie)
-        state, _ = request("/api/state", cookie=cookie)
-        check(state["apps"][0]["targets"][0]["account"] == second, "API selects an account for an app/device target")
+        check(state["apps"][0]["targets"][0]["account"] == second, "a device's signing account applies to its apps")
         check("smoke-first" not in json.dumps(state) and "smoke-second" not in json.dumps(state), "account passwords are excluded from API state")
         account_hash = file_hash(f"/data/accounts/{second}/credentials.env")
         assignments_hash = file_hash("/data/signing-accounts.json")
@@ -165,9 +175,15 @@ def main():
         ui_config = file_hash("/data/ui.json")
 
         inside("python3", "-c", f"import os,signal; os.kill({anisette_pid}, signal.SIGKILL)")
-        wait_for(lambda: supervisor_pid("anisette") not in ("0", anisette_pid), timeout=30)
+        wait_for(lambda: supervisor_pid("anisette") not in ("0", supervised_pid), timeout=30)
         wait_for(healthy, timeout=90)
         check(file_hash("/data/anisette/device.json") == identity, "Anisette recovers from process failure without replacing its identity")
+        # Anisette buffers its log; enough requests make it flush response lines.
+        inside("python3", "-c", "import urllib.request\nfor _ in range(80): urllib.request.urlopen('http://127.0.0.1:6969', timeout=10).read()")
+        time.sleep(2)
+        logs = docker("logs", NAME)
+        check("X-Apple-I-MD" not in logs and "Anisette data omitted from the log" in logs,
+              "Anisette's machine ID and one-time passwords stay out of the container log")
 
         loop_pid = supervisor_pid("sideloop")
         main_pid_code = "from pathlib import Path; print(next(p.parent.name for p in Path('/proc').glob('[0-9]*/cmdline') if p.read_bytes().split(bytes([0]))[:3] == [b'python3', b'-m', b'sideloop']))"
@@ -186,8 +202,8 @@ def main():
         docker("rm", NAME)
         created = False
         docker(
-            "run", "-d", "--name", NAME, "--privileged", "--stop-timeout", "45",
-            "-p", "127.0.0.1:18080:8080",
+            "run", "-d", "--name", NAME, "--stop-timeout", "45",
+            *([] if IN_CONTAINER else ["-p", "127.0.0.1:18080:8080"]),
             "--mount", f"type=volume,source={VOLUME},target=/data", IMAGE,
         )
         created = True

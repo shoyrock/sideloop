@@ -3,8 +3,13 @@ set -euo pipefail
 
 export DATA_DIR="${DATA_DIR:-/data}"
 mkdir -p "$DATA_DIR/anisette/runtime"
+mkdir -p "$DATA_DIR/anisette-v3"
 # The separate Anisette container used this same unprivileged account.
 # Its persisted identity and downloaded libraries now live beside Sideloop data.
 chown -R Alcoholic:Alcoholic "$DATA_DIR/anisette"
+chown -R Alcoholic:Alcoholic "$DATA_DIR/anisette-v3"
+if [[ -n "${ANISETTE_V3_SERVERS:-}" ]]; then
+  export ANISETTE_SERVER=http://127.0.0.1:6969
+fi
 
 exec "$@"

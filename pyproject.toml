@@ -1,0 +1,24 @@
+[tool.ruff]
+required-version = "==0.17.1"
+target-version = "py311"
+line-length = 100
+extend-exclude = [".agents", ".local", "artifacts", "data", "output"]
+
+[tool.ruff.lint]
+select = ["E9", "F"]
+
+# Existing unused imports are left untouched by this tooling-only bootstrap.
+# Remove each exception when that file receives an authorized cleanup.
+[tool.ruff.lint.per-file-ignores]
+"sideloop/accounts.py" = ["F401"]
+"sideloop/jobs.py" = ["F401"]
+"sideloop/server.py" = ["F401"]
+"sideloop/watcher.py" = ["F401"]
+"tests/fake_renewal.py" = ["F401"]
+"tests/test_accounts.py" = ["F401"]
+"tests/test_renewal.py" = ["F401"]
+"tests/test_verification.py" = ["F401"]
+
+[tool.ruff.format]
+quote-style = "preserve"
+line-ending = "lf"

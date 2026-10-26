@@ -1,7 +1,7 @@
 """Print a shareable authentication report; never print raw signer output.
 
-Run inside Sideloop. --verify makes one Apple sign-in attempt using the saved
-default account, without installing an app or saving account changes.
+Run inside Sideloop. --verify makes one Apple sign-in attempt without installing
+an app or saving account changes. Use --account or --device for a non-default signer.
 """
 import argparse
 import datetime as dt
@@ -36,8 +36,19 @@ def summarize(output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--verify', action='store_true')
+    target = parser.add_mutually_exclusive_group()
+    target.add_argument('--account', default='default', help='Saved account ID')
+    target.add_argument('--device', help='Registered device UDID; uses its assigned account')
     args = parser.parse_args()
-    from sideloop import accounts, config
+    from sideloop import accounts, config, store
+
+    account_id = args.account
+    if args.device:
+        if args.device not in store.device_ids():
+            parser.error('device is not registered')
+        account_id = accounts.device_account(args.device)
+    if account_id not in accounts.ids():
+        parser.error('account is not saved')
 
     report = {'container_utc': dt.datetime.now(dt.timezone.utc).isoformat()}
     try:
@@ -49,10 +60,18 @@ def main():
         timestamp = dt.datetime.fromisoformat(headers['X-Apple-I-Client-Time'].replace('Z', '+00:00'))
         report['anisette_age_seconds'] = round((dt.datetime.now(dt.timezone.utc) - timestamp).total_seconds())
         report['anisette_timezone_is_utc'] = headers.get('X-Apple-I-TimeZone') == 'UTC'
+        client = headers.get('X-MMe-Client-Info', '')
+        report['anisette_reported_platform'] = ('Windows' if '<Windows;' in client else
+                                                'Android' if '<Android;' in client else
+                                                'Mac' if '<Mac' in client else 'unknown')
+        report['anisette_platform_note'] = 'Reported client identity does not prove which ADI library generated the data.'
     except Exception as error:
         report['anisette_error_type'] = type(error).__name__
     try:
-        with urllib.request.urlopen('https://gsa.apple.com/', timeout=15) as response:
+        # gsa.apple.com chains to Apple's private CA, which the system store doesn't trust;
+        # any public Apple host serves the same clock in its Date header.
+        request = urllib.request.Request('https://www.apple.com/', method='HEAD')
+        with urllib.request.urlopen(request, timeout=15) as response:
             apple_date = response.headers.get('Date')
         if apple_date:
             report['apple_clock_difference_seconds'] = round((dt.datetime.now(dt.timezone.utc) - email.utils.parsedate_to_datetime(apple_date)).total_seconds())
@@ -65,9 +84,9 @@ def main():
         report['apple_connection_error_type'] = type(error).__name__
 
     if args.verify:
-        credentials = accounts.credentials('default')
+        credentials = accounts.credentials(account_id)
         if not all(credentials.values()):
-            report['verification'] = 'No saved default credentials'
+            report['verification'] = 'Selected account has no saved credentials'
         else:
             with tempfile.TemporaryDirectory(prefix='sideloop-diagnostic-') as work:
                 env = {**os.environ, 'TZ': 'UTC', 'HOME': work,
