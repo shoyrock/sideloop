@@ -467,7 +467,7 @@ class AccountTests(unittest.TestCase):
         subprocess.run(["bash", str(self.refresh_script)], env=env, capture_output=True, text=True, timeout=60)
         self.assertEqual(len((self.root / "refused-attempts").read_text().splitlines()), 1)
 
-    def test_auth_503_pause_persists_but_manual_retry_and_other_accounts_work(self):
+    def test_auth_503_pause_persists_for_manual_signing_and_other_accounts_work(self):
         self.install_marker(3600)
         env = {**self.fake_tools(), 'TEST_REFUSE': '503'}
         def run(*args):
@@ -480,11 +480,11 @@ class AccountTests(unittest.TestCase):
         attempts = self.root / 'refused-attempts'
         self.assertEqual(len(attempts.read_text().splitlines()), 1)
         self.assertEqual(run('--force').returncode, 1)
-        self.assertEqual(len(attempts.read_text().splitlines()), 2)
+        self.assertEqual(len(attempts.read_text().splitlines()), 1)
         (self.root / 'authentication-state.json').unlink()
         pause.write_text(str(int(time.time()) - 1))
         self.assertEqual(run().returncode, 1)
-        self.assertEqual(len(attempts.read_text().splitlines()), 3)
+        self.assertEqual(len(attempts.read_text().splitlines()), 2)
         accounts.assign(DEVICE, self.second)
         self.install_marker(3600)
         self.assertEqual(run().returncode, 1)
@@ -498,6 +498,32 @@ class AccountTests(unittest.TestCase):
         self.assertFalse((self.root / '.auth-retry-after').exists())
         self.assertEqual(self.refresh(env).returncode, 1)
         self.assertEqual(len((self.root / 'refused-attempts').read_text().splitlines()), 2)
+
+    def test_locked_account_blocks_automatic_and_forced_signing_until_verified(self):
+        self.install_marker(3600)
+        env = self.fake_tools()
+        state = accounts.state_folder(APP, DEVICE)
+        expiry = (state / 'expiry').read_text()
+        signing_auth.failed(self.root, 'Error: com.rileytestut.AltServer.Localized (-20209).')
+        with patch.object(signing_auth.time, 'time', return_value=time.time() + 30 * 86400):
+            self.assertIn('iforgot.apple.com', signing_auth.pause_reason(self.root))
+        for args, expected in (((), 0), (('--force',), 1)):
+            with self.subTest(args=args):
+                result = self.refresh(env, *args)
+                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                self.assertIn('Automatic sign-in is stopped', result.stdout)
+                self.assertEqual((state / 'expiry').read_text(), expiry)
+                self.assertEqual(self.signed(), 0)
+        accounts.assign(DEVICE, self.second)
+        self.install_marker(3600)
+        result = self.refresh(env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.signed(), 1)
+        accounts.assign(DEVICE, 'default')
+        signing_auth.clear(self.root)
+        result = self.refresh(env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.signed(), 2)
 
     def test_runs_that_leave_apps_due_back_off(self):
         self.install_marker(3600)

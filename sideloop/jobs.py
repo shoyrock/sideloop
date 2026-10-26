@@ -30,13 +30,17 @@ IOS_TOO_OLD = "iOS refused the app: the device's iOS version is older than the a
 ALTSTORE_LIMIT = "Please deactivate a sideloaded app with AltStore"
 LIMIT_ADVICE = ("Delete one of these apps from the device, then install again. Offloaded apps still count, "
                 "so turn off Offload Unused Apps in Settings > App Store.")
-VERIFY_PUBLIC = re.compile(r'^(?:Enter two factor code$|Requires two factor\.\.\.$|'
-                          r'Apple authentication HTTP status: [0-9]{3}$|Apple authentication service unavailable|'
-                          r'Apple authentication is unavailable or rate limited \(HTTP (?:429|503)\)\.|'
-                          r'Apple refused authentication \(-8004[56]\)\.|'
-                          r'Authentication failed:|Account authentication succeeded\.$|'
-                          r'Signing in to Apple to verify|Account verification (?:cancelled|timed out)|'
-                          r'Apple sign-in was not verified|Apple refused (?:this Apple ID|the sign-in))')
+VERIFY_PUBLIC = re.compile(
+    r'^(?:Enter two factor code$|Requires two factor\.\.\.$|'
+    r'Apple authentication HTTP status: [0-9]{3}$|Apple authentication service unavailable|'
+    r'Apple authentication is unavailable or rate limited \(HTTP (?:429|503)\)\.|'
+    r'Apple refused authentication \(-8004[56]\)\.|'
+    r'Apple locked this account for security reasons \(-20209\)\.|'
+    r'Apple account authentication (?:failed\.$|did not complete\.)|'
+    r'Authentication failed:|Account authentication succeeded\.$|'
+    r'Signing in to Apple to verify|Account verification (?:cancelled|timed out)|'
+    r'Apple sign-in was not verified|Apple refused (?:this Apple ID|the sign-in))'
+)
 
 
 def hidden(line):

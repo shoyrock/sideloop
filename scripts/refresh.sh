@@ -291,10 +291,12 @@ if [[ -n "$refused" ]]; then
 fi
 
 # This account's pause survives restarts and device-arrival batches. Manual
-# operations can retry deliberately; unrelated accounts continue normally.
-retry_after="$(python3 -m sideloop.signing_auth retry-at "$SIGNING_ACCOUNT")"
-if (( FORCE == 0 && retry_after > $(now) )); then
-  log "skipped: Apple authentication is paused for this account until $(fmt_epoch "$retry_after"); verify it in Settings to retry now"
+# operations respect the same limit. Account recovery and explicit verification
+# in Settings are separate from asking to renew or install an app.
+pause_reason="$(python3 -m sideloop.signing_auth pause "$SIGNING_ACCOUNT")"
+if [[ -n "$pause_reason" ]]; then
+  log "skipped: $pause_reason"
+  (( FORCE )) && exit 1
   exit 0
 fi
 
@@ -419,7 +421,10 @@ elif grep -q 'com.rileytestut.AltServer (9)' "$out"; then
   result=limit
   hint="$DEVICE_NAME already has the 3 apps iOS allows with free developer profiles ($(blocking_apps)). The limit counts apps from every Apple account, so another account won't help; delete one from the device, then tap Install again"
 elif [[ -n "$AUTH_HINT" ]]; then
-  hint="$AUTH_HINT Automatic retries for this account are paused until $(fmt_epoch "$AUTH_RETRY_AT"); verify it in Settings to retry now"
+  hint="$AUTH_HINT"
+  if (( AUTH_RETRY_AT > 0 )); then
+    hint+=" Automatic retries for this account are paused until $(fmt_epoch "$AUTH_RETRY_AT"); verify it in Settings to retry now"
+  fi
   refused=1
   (( rc == 0 )) && rc=1
 elif grep -q 'com.rileytestut.AltServer (10)' "$out"; then

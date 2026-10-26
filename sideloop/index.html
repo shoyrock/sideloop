@@ -390,9 +390,9 @@ function appsView() {
     const failure = account.authentication;
     const devices = devs.filter(d => d.account === account.id);
     if (failure && failure.message && devices.length) issues.push(["warn",
-      `${devices.map(d => d.name).join(", ")}: ${failure.message} ${failure.retry_at > S.now
+      `${devices.map(d => d.name).join(", ")}: ${failure.message} ${failure.kind !== "service" ? "Automatic sign-in is stopped until the account is verified in Settings." : failure.retry_at > S.now
         ? `Automatic sign-in retry after ${new Date(failure.retry_at * 1000).toLocaleString()}.`
-        : "Automatic sign-in will retry when an app is due and its device is reachable."} Verify the account in Settings to retry now.`]);
+        : "Automatic sign-in will retry when an app is due and its device is reachable."} ${failure.kind !== "service" ? "" : "Verify the account in Settings to retry now."}`]);
   }
   for (const d of devs) {
     const n = onDev(d).length;
@@ -658,7 +658,7 @@ function settingsView() {
       <div class="cell"><label for="apw">Password</label><input class="fi" id="apw" type="password" placeholder="${editing && editing.has_password ? "Saved" : "Required"}" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="go" ${NOFILL} ${busy ? "disabled" : ""}></div>
       ${editing ? `<div class="cell"><span class="k">Signs for</span><span class="v">${esc((S.registered || []).filter(d => d.account === editing.id).map(d => d.name).join(", ") || "No device")}</span></div>` : ""}
       ${editing ? `<div class="cell"><span class="k">Sign-in status</span><span>${esc(({verified:"Last sign-in verified",failed:"Sign-in failed",checking:"Checking sign-in…",unverified:"Not verified"})[(editing.verification || {}).status] || "Not verified")}</span></div>` : ""}
-      ${editing && editing.authentication && editing.authentication.message ? `<div class="cell"><span>${esc(editing.authentication.message)}${editing.authentication.retry_at > S.now ? `<span class="sub">Automatic retry after ${esc(new Date(editing.authentication.retry_at * 1000).toLocaleString())}</span>` : ""}</span></div>` : ""}
+      ${editing && editing.authentication && editing.authentication.message ? `<div class="cell"><span>${esc(editing.authentication.message)}${editing.authentication.kind !== "service" ? `<span class="sub">Automatic sign-in stopped. Recover the account if needed, then verify it here.</span>` : editing.authentication.retry_at > S.now ? `<span class="sub">Automatic retry after ${esc(new Date(editing.authentication.retry_at * 1000).toLocaleString())}</span>` : ""}</span></div>` : ""}
       <button class="cell action" ${busy ? "disabled" : ""}>Sign In and Save Account</button>
       ${editing && editing.has_password ? `<button type="button" class="cell action" id="verifyaccount" ${busy ? "disabled" : ""}>Verify Saved Account</button>` : ""}
       ${editing && editing.id !== "default" ? `<button type="button" class="cell action" id="removeaccount" style="color:var(--red)" ${busy ? "disabled" : ""}>${confirmRemove === "acct:" + editing.id ? "Tap Again to Remove" : "Remove Account"}</button>` : ""}

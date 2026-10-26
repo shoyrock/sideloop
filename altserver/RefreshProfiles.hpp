@@ -17,6 +17,7 @@ inline std::string RefreshSerial(std::string value)
 
 inline int RefreshProfiles(const char *requestPath, const char *appleID, const char *password)
 {
+    bool authenticating = false;
     try {
         std::ifstream input(requestPath);
         auto request = web::json::value::parse(input);
@@ -35,8 +36,10 @@ inline int RefreshProfiles(const char *requestPath, const char *appleID, const c
             });
         };
         auto api = AppleAPI::getInstance();
+        authenticating = true;
         auto auth = api->Authenticate(appleID, password,
             AnisetteDataManager::instance()->FetchAnisetteData(), handler).get();
+        authenticating = false;
         std::shared_ptr<Team> team;
         for (auto candidate : api->FetchTeams(auth.first, auth.second).get())
             if (candidate->identifier() == teamID) team = candidate;
@@ -76,8 +79,10 @@ inline int RefreshProfiles(const char *requestPath, const char *appleID, const c
         std::cout << "Renewal profiles fetched." << std::endl;
         return 0;
     } catch (Error& error) {
+        if (authenticating) std::cerr << "Apple account authentication failed." << std::endl;
         std::cerr << "Error: " << error.domain() << " (" << error.code() << ")." << std::endl;
     } catch (std::exception&) {
+        if (authenticating) std::cerr << "Apple account authentication failed." << std::endl;
         std::cerr << "Profile renewal could not complete; no app was installed." << std::endl;
     }
     return 1;

@@ -107,6 +107,7 @@ with tempfile.TemporaryDirectory() as folder:
                                  'ALTSERVER_ANISETTE_SERVER':'http://127.0.0.1:6969'},
                             capture_output=True,text=True,timeout=15)
     assert result.returncode == 1, result.stdout + result.stderr
+    assert 'Apple account authentication failed.' in result.stderr
     assert operations == ['init'], operations
     assert not list(root.glob('*.mobileprovision'))
     assert not (root/'AltServerData').exists()

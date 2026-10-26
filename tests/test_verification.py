@@ -46,6 +46,9 @@ if mode in ('429', '503'):
 if mode == 'error':
     print('Authentication failed: This action cannot be completed at this time (-22411).')
     sys.exit(1)
+if mode == 'locked':
+    print('Authentication failed: Account locked (-20209).')
+    sys.exit(1)
 if mode in ('signer', '80046'):
     if mode == '80046':
         print('Authentication failed: This action cannot be completed at this time. (-80046).')
@@ -94,6 +97,20 @@ if mode != 'silent':
         self.assertFalse((self.root / 'apps').exists())
         self.assertFalse((self.root / 'AltServerData').exists())
 
+    def test_locked_account_reports_recovery_and_successful_verification_unblocks_it(self):
+        job, _ = self.launch('locked')
+        self.assertEqual(job.rc, 1)
+        self.assertEqual(signing_auth.read(self.root)['kind'], 'locked')
+        self.assertIn('iforgot.apple.com', job.view(0)['lines'][-1])
+        self.assertNotIn('synthetic-private-session', json.dumps(job.view(0)))
+        failed, _ = self.launch('503')
+        self.assertEqual(failed.rc, 1)
+        self.assertEqual(signing_auth.read(self.root)['kind'], 'locked')
+        verified, _ = self.launch()
+        self.assertEqual(verified.rc, 0)
+        self.assertEqual(signing_auth.pause_reason(self.root), '')
+        self.assertEqual(accounts.verification('default')['status'], 'verified')
+
     def test_mfa_prompts_then_verifies_without_persisting_code(self):
         job, worker = self.launch('mfa')
         try:
@@ -135,7 +152,8 @@ if mode != 'silent':
         self.assertEqual(view['last'], signing_auth.classify('-22411')[1])
         self.assertIn('-22411', view['lines'][-2])
         silent, _ = self.launch('silent')
-        self.assertNotIn(signing_auth.classify('-22411')[1], silent.lines)
+        # An incomplete retry must not clear the account's recovery requirement.
+        self.assertIn(signing_auth.classify('-22411')[1], silent.lines)
         # Saving shows the same guidance as the final summary line.
         saving = self.save_attempt('error')
         self.assertEqual(saving.view()['last'], signing_auth.classify('-22411')[1] + ' Account changes were not saved.')

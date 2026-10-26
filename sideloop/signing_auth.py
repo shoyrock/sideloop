@@ -3,6 +3,7 @@
 Only fixed classifications are stored. Raw signer output can contain Apple
 session material and must never become part of this state or the API response.
 """
+import datetime as dt
 import json
 import os
 import re
@@ -13,9 +14,18 @@ from pathlib import Path
 
 RETRY_INTERVAL = 30 * 60
 MAX_RETRY_INTERVAL = 4 * 60 * 60
+FAILURE_WINDOW = 24 * 60 * 60
+MAX_FAILURES = 3
+RECOVERY_KINDS = ('locked', 'account', 'verification')
 
 
 def classify(output):
+    if re.search(r'(?<!\d)-20209(?!\d)', output):
+        return 'locked', (
+            'Apple locked this account for security reasons (-20209). '
+            'Recover it at https://iforgot.apple.com, then verify the saved account in Settings. '
+            'Automatic sign-in is stopped; reinstalling apps cannot unlock the account.'
+        )
     status = re.search(r'^Apple authentication HTTP status: (429|503)\s*$', output, re.M)
     if status:
         code = status[1]
@@ -36,16 +46,34 @@ def classify(output):
     if (re.search(r'two.?factor code|verification code', output, re.I)
             and not re.search(r'Got token for|Fetching team|Account authentication succeeded\.', output)):
         return 'verification', 'Apple is asking for a 2FA code. Verify the account in Settings.'
+    if re.search(r'^Apple account authentication failed\.$', output, re.M):
+        return 'service', (
+            'Apple account authentication did not complete. '
+            'Sign-in attempts are limited; see the authentication error in Details.'
+        )
     return '', ''
 
 
 def read(work):
     try:
         state = json.loads((Path(work) / 'authentication-state.json').read_text())
-        if (not isinstance(state, dict) or state.get('kind') not in ('service', 'account', 'verification')
-                or not isinstance(state.get('message'), str)
-                or any(type(state.get(k)) is not int or state[k] < 0
-                       for k in ('failures', 'failed_at', 'retry_at'))):
+        if (
+            not isinstance(state, dict)
+            or state.get('kind') not in ('service', 'account', 'verification', 'locked')
+            or not isinstance(state.get('message'), str)
+            or any(
+                type(state.get(k)) is not int or state[k] < 0
+                for k in ('failures', 'failed_at', 'retry_at')
+            )
+            or (
+                'failure_times' in state
+                and (
+                    not isinstance(state['failure_times'], list)
+                    or len(state['failure_times']) > MAX_FAILURES
+                    or any(type(t) is not int or t < 0 for t in state['failure_times'])
+                )
+            )
+        ):
             return {}
         return state
     except (FileNotFoundError, ValueError, UnicodeError):
@@ -65,15 +93,36 @@ def retry_at(work):
 
 
 def failed(work, output):
+    previous = read(work)
     kind, message = classify(output)
+    # A network error or another failed manual verification cannot recover a lock.
+    if previous.get('kind') == 'locked' or (
+        previous.get('kind') in RECOVERY_KINDS and kind in ('', 'service')
+    ):
+        return previous
     if not kind:
         return {}
     work = Path(work)
-    previous = read(work)
-    failures = min(previous.get('failures', 0) + 1, 4)
     now = int(time.time())
-    state = {'kind': kind, 'message': message, 'failures': failures, 'failed_at': now,
-             'retry_at': now + min(RETRY_INTERVAL * 2 ** (failures - 1), MAX_RETRY_INTERVAL)}
+    history = previous.get(
+        'failure_times',
+        [previous.get('failed_at', now)] * min(previous.get('failures', 0), MAX_FAILURES),
+    )
+    history = ([t for t in history if t > now - FAILURE_WINDOW] + [now])[-MAX_FAILURES:]
+    failures = len(history)
+    retry = now + min(RETRY_INTERVAL * 2 ** (failures - 1), MAX_RETRY_INTERVAL)
+    if failures == MAX_FAILURES:
+        retry = max(retry, history[0] + FAILURE_WINDOW)
+        if kind == 'service':
+            message += ' Sign-in attempt limit reached; at most 3 failed automatic sign-ins are allowed in 24 hours.'
+    state = {
+        'kind': kind,
+        'message': message,
+        'failures': failures,
+        'failed_at': now,
+        'failure_times': history,
+        'retry_at': 0 if kind in RECOVERY_KINDS else retry,
+    }
     work.mkdir(parents=True, exist_ok=True)
     path = work / 'authentication-state.json'
     tmp = path.with_suffix('.tmp')
@@ -82,8 +131,24 @@ def failed(work, output):
         json.dump(state, stream)
     os.replace(tmp, path)
     # Kept for safe rollback to images that only understand the old pause file.
-    (work / '.auth-retry-after').write_text(str(state['retry_at']))
+    legacy_retry = state['retry_at'] or now + MAX_RETRY_INTERVAL
+    (work / '.auth-retry-after').write_text(str(legacy_retry))
     return state
+
+
+def pause_reason(work):
+    state = read(work)
+    if state.get('kind') in RECOVERY_KINDS:
+        return state['message']
+    retry = retry_at(work)
+    if retry > time.time():
+        until = dt.datetime.fromtimestamp(retry).strftime('%a %d %b %H:%M')
+        return (
+            'Apple authentication is paused for this account until '
+            + until
+            + '; verify it in Settings to retry now'
+        )
+    return ''
 
 
 def clear(work):
@@ -97,6 +162,8 @@ def main():
     work = accounts.runtime_folder(account_id)
     if action == 'retry-at':
         print(retry_at(work))
+    elif action == 'pause':
+        print(pause_reason(work))
     elif action == 'clear':
         clear(work)
         accounts.set_verification(account_id, 'verified')

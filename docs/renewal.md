@@ -41,3 +41,30 @@ The Linux CLI has no complete profile-only entrypoint upstream, so this fork add
 a small `--refresh-profiles` adapter around the existing AltSign API. It does not
 duplicate Apple authentication or signing cryptography. The remaining orchestration
 and safety checks are in `sideloop/renewal.py`.
+
+## Sign-in limits and account recovery
+
+Automatic authentication has a shared limit per Apple account, rather than per
+app or device. Transient failures wait 30 minutes, then an hour. Three failures
+in a rolling 24 hours stop further signing attempts until both the cooldown and
+the rolling limit permit another attempt. The history persists in appdata;
+reconnecting a device, restarting the container, or tapping Renew cannot bypass it.
+Successful completed authentication clears that account's failure history.
+
+Apple's locked-account response (-20209), rejected credentials (-20101), and
+an MFA requirement stop automatic sign-in immediately until the account is
+verified in Settings. A locked account has no automatic unlock timer. Failed
+verification or a provider outage cannot clear that requirement. Other accounts
+continue normally, and installed apps/profiles are preserved.
+
+Unknown failures inside the native profile-renewal authentication stage are
+identified separately from later device or app failures, so they also receive
+the authentication limit. Errors are reported without Apple response bodies or
+credentials. Explicit account verification in Settings can test recovered or
+corrected credentials; it never installs an app.
+
+Apple account recovery is controlled by Apple. Changing providers, retrying, or
+reinstalling an app cannot unlock an account. The owner must complete Apple's
+[account recovery steps](https://support.apple.com/102640), then verify the saved
+account. These limits reduce unnecessary attempts; they cannot guarantee that
+Apple will never lock an account for other reasons.
