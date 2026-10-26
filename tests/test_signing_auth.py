@@ -103,6 +103,11 @@ class AuthenticationRetryTests(unittest.TestCase):
         self.assertEqual(state['failures'], 3)
         self.assertEqual(state['retry_at'], 193600)
 
+    def test_timeout_during_authentication_is_limited_but_later_device_timeout_is_not(self):
+        started = 'Apple account authentication started.\n'
+        self.assertEqual(signing_auth.classify(started + 'process timed out')[0], 'service')
+        self.assertEqual(signing_auth.classify(started + 'Account authentication succeeded.\nDevice timed out'), ('', ''))
+
     def test_lock_code_requires_exact_numeric_boundary_and_hides_raw_output(self):
         self.assertEqual(signing_auth.classify('Error (-202090)'), ('', ''))
         state = signing_auth.failed(self.work, 'private-password and private-token (-20209)')

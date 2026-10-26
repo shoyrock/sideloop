@@ -46,7 +46,10 @@ def classify(output):
     if (re.search(r'two.?factor code|verification code', output, re.I)
             and not re.search(r'Got token for|Fetching team|Account authentication succeeded\.', output)):
         return 'verification', 'Apple is asking for a 2FA code. Verify the account in Settings.'
-    if re.search(r'^Apple account authentication failed\.$', output, re.M):
+    if re.search(r'^Apple account authentication failed\.$', output, re.M) or (
+        'Apple account authentication started.' in output.splitlines()
+        and 'Account authentication succeeded.' not in output.splitlines()
+    ):
         return 'service', (
             'Apple account authentication did not complete. '
             'Sign-in attempts are limited; see the authentication error in Details.'

@@ -37,9 +37,11 @@ inline int RefreshProfiles(const char *requestPath, const char *appleID, const c
         };
         auto api = AppleAPI::getInstance();
         authenticating = true;
+        std::cout << "Apple account authentication started." << std::endl;
         auto auth = api->Authenticate(appleID, password,
             AnisetteDataManager::instance()->FetchAnisetteData(), handler).get();
         authenticating = false;
+        std::cout << "Account authentication succeeded." << std::endl;
         std::shared_ptr<Team> team;
         for (auto candidate : api->FetchTeams(auth.first, auth.second).get())
             if (candidate->identifier() == teamID) team = candidate;

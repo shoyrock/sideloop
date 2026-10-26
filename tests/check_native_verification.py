@@ -108,6 +108,8 @@ with tempfile.TemporaryDirectory() as folder:
                             capture_output=True,text=True,timeout=15)
     assert result.returncode == 1, result.stdout + result.stderr
     assert 'Apple account authentication failed.' in result.stderr
+    assert 'Apple account authentication started.' in result.stdout
+    assert 'Account authentication succeeded.' not in result.stdout
     assert operations == ['init'], operations
     assert not list(root.glob('*.mobileprovision'))
     assert not (root/'AltServerData').exists()
